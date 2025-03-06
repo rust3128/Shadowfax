@@ -1,17 +1,19 @@
 cmake_minimum_required(VERSION 3.19)
 project(Shadowfax LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Network)
 
 qt_standard_project_setup()
 
 qt_add_executable(Shadowfax
     main.cpp
+    Bot/bot.cpp Bot/bot.h
 )
 
 target_link_libraries(Shadowfax
     PRIVATE
         Qt::Core
+        Qt::Network  # 🔹 Підключаємо бібліотеку Network
 )
 
 include(GNUInstallDirs)
