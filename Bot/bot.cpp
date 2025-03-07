@@ -4,11 +4,103 @@
 #include <QJsonArray>
 #include <QNetworkReply>
 #include <QDebug>
+#include <QSettings>
+#include <QFile>
+#include <QDir>
+#include <QTextStream>
+#include <QCoreApplication>
+#include <QDateTime>
+
+static QFile logFile;
+
 
 Bot::Bot(QObject *parent) : QObject(parent) {
     lastUpdateId = 0;  // Ініціалізуємо update_id
     networkManager = new QNetworkAccessManager(this);
+    loadBotToken();
 }
+
+/**
+ * @brief Ініціалізує логування у файл
+ */
+void Bot::initLogging() {
+    QString logDirPath = QCoreApplication::applicationDirPath() + "/logs";
+    QDir logDir(logDirPath);
+    if (!logDir.exists()) {
+        logDir.mkpath(".");
+    }
+
+    QString logFilePath = logDirPath + "/shadowfax.log";
+    logFile.setFileName(logFilePath);
+
+    if (!logFile.open(QIODevice::Append | QIODevice::Text)) {
+        qCritical() << "Failed to open log file for writing!";
+        return;
+    }
+
+    // 🔹 Оновлений обробник логів
+    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &msg) {
+        QString logEntry = QString("[%1] %2")
+        .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"))
+            .arg(msg);
+
+        QTextStream logStream(&logFile);
+        logStream << logEntry << "\n";  // 🔹 Записуємо у файл
+        logStream.flush();
+
+        QTextStream consoleStream(stdout);
+        consoleStream << logEntry << Qt::endl;  // 🔹 Виводимо в консоль
+    });
+
+    qDebug() << "Logging initialized. Log file:" << logFilePath;
+}
+
+/**
+/**
+ * @brief Завантажує токен бота з `config.ini` або створює файл, якщо його немає.
+ */
+void Bot::loadBotToken() {
+    QString configPath = QCoreApplication::applicationDirPath() + "/config/config.ini";
+    qDebug() << "Checking config file at:" << configPath;
+
+    QFile configFile(configPath);
+
+    // 🔹 Якщо `config.ini` не існує – створюємо його
+    if (!configFile.exists()) {
+        qWarning() << "Config file not found! Creating `config.ini`...";
+
+        QDir configDir(QFileInfo(configPath).absolutePath());
+        if (!configDir.exists()) {
+            configDir.mkpath(".");
+            qDebug() << "Config directory created.";
+        }
+
+        if (configFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QTextStream out(&configFile);
+            out << "[Telegram]\n";
+            out << "bot_token=\n";  // 🔹 Порожній токен
+            configFile.close();
+            qCritical() << "Please enter the bot token in config.ini and restart the application.";
+            QCoreApplication::exit(1);
+            return;
+        } else {
+            qCritical() << "Failed to create config.ini!";
+        }
+    }
+
+    // 🔹 Читаємо токен
+    QSettings settings(configPath, QSettings::IniFormat);
+    botToken = settings.value("Telegram/bot_token", "").toString();
+    qDebug() << "Read bot token from config.ini:" << (botToken.isEmpty() ? "EMPTY" : "LOADED");
+
+    if (botToken.isEmpty()) {
+        qCritical() << "Bot token is missing in config.ini! Please enter the token and restart the application.";
+        QCoreApplication::exit(1);
+    } else {
+        qInfo() << "Bot token loaded successfully.";
+    }
+}
+
 
 void Bot::startPolling() {
     qDebug() << "🤖 Бот запущений!";
@@ -25,18 +117,9 @@ void Bot::getUpdates() {
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "❌ Помилка мережі: " << reply->errorString();
-
-            if (reply->errorString().contains("Conflict")) {
-                qWarning() << "🔴 Виявлено конфлікт! Перевір Webhook!";
-                // Автоматично вимикаємо Webhook
-                QNetworkRequest webhookRequest(QUrl(QString("https://api.telegram.org/bot%1/deleteWebhook?drop_pending_updates=true")
-                                                        .arg(botToken)));
-                networkManager->get(webhookRequest);
-            }
-
+            qWarning() << "Помилка мережі:" << reply->errorString();
             reply->deleteLater();
-            QTimer::singleShot(5000, this, &Bot::getUpdates);  // Повтор через 5 сек
+            QTimer::singleShot(5000, this, &Bot::getUpdates);
             return;
         }
 
@@ -45,7 +128,7 @@ void Bot::getUpdates() {
         QJsonObject jsonObject = jsonResponse.object();
 
         if (!jsonObject["ok"].toBool()) {
-            qWarning() << "⚠️ Telegram API повернуло помилку!";
+            qWarning() << "Telegram API повернуло помилку!";
             reply->deleteLater();
             return;
         }
@@ -56,22 +139,45 @@ void Bot::getUpdates() {
             qint64 updateId = updateObj["update_id"].toVariant().toLongLong();
 
             if (updateId > lastUpdateId) {
-                lastUpdateId = updateId;  // ✅ Оновлюємо, щоб уникнути повторів
+                lastUpdateId = updateId;
 
                 QJsonObject message = updateObj["message"].toObject();
                 QString text = message["text"].toString();
                 qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
 
-                qDebug() << "📩 Отримано повідомлення від" << chatId << ":" << text;
+                qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << text;
 
-                sendMessage(chatId, "Ви написали: " + text);
+                if (text == "/start") {
+                    handleStartCommand(chatId);
+                } else if (text == "/help") {
+                    handleHelpCommand(chatId);
+                } else {
+                    sendMessage(chatId, "Ви написали: " + text);
+                }
             }
         }
 
         reply->deleteLater();
-        QTimer::singleShot(2000, this, &Bot::getUpdates);  // Запускаємо знову через 2 секунди
+        QTimer::singleShot(2000, this, &Bot::getUpdates);
     });
 }
+
+
+void Bot::handleStartCommand(qint64 chatId) {
+    qInfo() << "✅ Виконання команди /start для користувача" << chatId;
+    sendMessage(chatId, "Привіт! Я бот Shadowfax. Чим можу допомогти?");
+}
+
+void Bot::handleHelpCommand(qint64 chatId) {
+    qInfo() << "✅ Виконання команди /help для користувача" << chatId;
+
+    QString helpText = "❓ Доступні команди:\n"
+                       "/start - Почати взаємодію з ботом\n"
+                       "/help - Показати список команд\n";
+
+    sendMessage(chatId, helpText);
+}
+
 
 void Bot::sendMessage(qint64 chatId, const QString &text) {
     QString url = QString("https://api.telegram.org/bot%1/sendMessage")
@@ -84,13 +190,17 @@ void Bot::sendMessage(qint64 chatId, const QString &text) {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
+    qDebug() << "📤 Відправка повідомлення...";
+    qDebug() << "🔹 Chat ID:" << chatId;
+    qDebug() << "🔹 Текст:" << text;
+
     QNetworkReply *reply = networkManager->post(request, QJsonDocument(payload).toJson());
 
     connect(reply, &QNetworkReply::finished, this, [reply]() {
         if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "⚠️ Помилка при відправці повідомлення: " << reply->errorString();
+            qWarning() << "Помилка при відправці повідомлення:" << reply->errorString();
         } else {
-            qDebug() << "✅ Повідомлення відправлено!";
+            qInfo() << "✅ Повідомлення успішно відправлено.";
         }
         reply->deleteLater();
     });
