@@ -1,3 +1,4 @@
+
 #include "bot.h"
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -145,26 +146,36 @@ void Bot::getUpdates() {
                 QJsonObject message = updateObj["message"].toObject();
                 QString text = message["text"].toString();
                 qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
-                ///////Аторизація
-                qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << text;
 
-                // 🔹 Перевіряємо авторизацію
+                /////// Авторизація
+                qInfo() << "?? Отримано повідомлення від" << chatId << ":" << text;
+
                 if (!isUserAuthorized(chatId)) {
-                    sendMessage(chatId, "❌ У вас немає доступу до цього бота.");
+                    sendMessage(chatId, "? У вас немає доступу до цього бота.");
                     return;
                 }
                 /////////
                 QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
-
                 // 🔹 Конвертуємо текстові кнопки в команди
                 if (cleanText == "📜 Допомога") cleanText = "/help";
                 if (cleanText == "📋 Список клієнтів") cleanText = "/clients";
                 if (cleanText == "🚀 Почати") cleanText = "/start";
+                if (cleanText == "🔙 Головне меню") cleanText = "/start";  // Додаємо обробку кнопки "🔙 Головне меню"
 
-                qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << cleanText;
+                if (clientIdMap.contains(cleanText)) {
+                    qint64 clientId = clientIdMap[cleanText];
+                    lastSelectedClientId = clientId;  // Зберігаємо вибраного клієнта
+
+                    qInfo() << "✅ Користувач вибрав клієнта:" << cleanText << "(ID:" << clientId << ")";
+
+                    // ?? Відправляємо повідомлення з проханням ввести номер терміналу
+                    sendMessage(chatId, "🏪 Мережа АЗС - " + cleanText + ".\nВкажіть номер терміналу:");
+                    waitingForTerminal = true;  // Бот очікує введення номера терміналу
+                }
+
 
                 if (!cleanText.startsWith("/")) {
-                    sendMessage(chatId, "❌ Виберіть команду з меню!");
+                    sendMessage(chatId, "? Виберіть команду з меню!");
                 } else {
                     if (cleanText == "/start") {
                         handleStartCommand(chatId);
@@ -173,9 +184,10 @@ void Bot::getUpdates() {
                     } else if (cleanText == "/clients") {
                         handleClientsCommand(chatId);
                     } else {
-                        sendMessage(chatId, "❌ Невідома команда.");
+                        sendMessage(chatId, "? Невідома команда.");
                     }
                 }
+
             }
         }
 
@@ -183,6 +195,7 @@ void Bot::getUpdates() {
         QTimer::singleShot(2000, this, &Bot::getUpdates);
     });
 }
+
 
 
 void Bot::handleStartCommand(qint64 chatId) {
@@ -225,11 +238,97 @@ void Bot::handleHelpCommand(qint64 chatId) {
     sendMessage(chatId, helpText);
 }
 
+// void Bot::handleClientsCommand(qint64 chatId) {
+//     lastChatId = chatId;  // Зберігаємо правильний Chat ID
+//     fetchClientsList();
+//     sendMessage(chatId, "🔄 Отримую список клієнтів...");
+// }
+
 void Bot::handleClientsCommand(qint64 chatId) {
-    lastChatId = chatId;  // Зберігаємо правильний Chat ID
-    fetchClientsList();
-    sendMessage(chatId, "🔄 Отримую список клієнтів...");
+    qInfo() << "? Виконання команди /clients для користувача" << chatId;
+
+    // Запит до API Palantir для отримання списку клієнтів
+    QUrl url("http://localhost:8181/clients");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, chatId]() {
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            processClientsList(chatId, responseData);
+        } else {
+            qWarning() << "? Помилка отримання списку клієнтів:" << reply->errorString();
+            sendMessage(chatId, "? Помилка отримання даних.");
+        }
+        reply->deleteLater();
+    });
 }
+
+void Bot::processClientsList(qint64 chatId, const QByteArray &data) {
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+    if (!jsonDoc.isObject()) {
+        qWarning() << "❌ Невірний формат JSON!";
+        sendMessage(chatId, "❌ Сталася помилка під час отримання клієнтів.");
+        return;
+    }
+
+    QJsonObject jsonObj = jsonDoc.object();
+    if (!jsonObj.contains("data") || !jsonObj["data"].isArray()) {
+        qWarning() << "❌ Відсутній масив `data` у відповіді!";
+        sendMessage(chatId, "❌ Дані про клієнтів недоступні.");
+        return;
+    }
+
+    QJsonArray clientsArray = jsonObj["data"].toArray();
+    QJsonArray keyboardArray;
+    QJsonArray row;
+    int count = 0;
+
+    clientIdMap.clear();  // Очистити перед записом нових значень
+
+    for (const QJsonValue &client : clientsArray) {
+        QJsonObject obj = client.toObject();
+        QString clientName = obj["name"].toString();
+        qint64 clientId = obj["id"].toInt();
+
+        clientIdMap[clientName] = clientId;  // Зберігаємо ID клієнта
+
+        row.append(clientName);
+        count++;
+
+        if (count == 3) {
+            keyboardArray.append(row);
+            row = QJsonArray();
+            count = 0;
+        }
+    }
+
+    if (!row.isEmpty()) {
+        keyboardArray.append(row);
+    }
+
+    QJsonArray backRow;
+    backRow.append("🔙 Головне меню");
+    keyboardArray.append(backRow);
+
+    QJsonObject keyboard;
+    keyboard["keyboard"] = keyboardArray;
+    keyboard["resize_keyboard"] = true;
+    keyboard["one_time_keyboard"] = false;
+
+    QJsonObject payload;
+    payload["chat_id"] = chatId;
+    payload["text"] = "📋 Виберіть клієнта:";
+    payload["reply_markup"] = keyboard;
+
+    sendMessageWithKeyboard(payload);
+}
+
+
+
+
 
 
 void Bot::fetchClientsList()

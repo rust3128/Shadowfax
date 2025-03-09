@@ -28,14 +28,17 @@ private:
     void processClientsResponse(const QByteArray &data); //Обробляємо GET /clients.
     void sendMessageWithKeyboard(const QJsonObject &payload);
     bool isUserAuthorized(qint64 chatId);           // Перевірка авторізації
+    void processClientsList(qint64 chatId, const QByteArray &data);
 private:
     QNetworkAccessManager *networkManager;
     QString botToken;
     qint64 lastUpdateId;  // Останній отриманий update_id
     qint64 lastChatId = 0;  // Зберігаємо останній Chat ID для відповідей
+    QMap<QString, qint64> clientIdMap;  // Збереження відповідності "Назва клієнта" -> ID
+    qint64 lastSelectedClientId = 0;  // ID вибраного клієнта
+    bool waitingForTerminal = false;  // Чи очікуємо введення номера терміналу?
 
 
 };
 
 #endif // BOT_H
-
