@@ -10,6 +10,7 @@
 #include <QTextStream>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QRegularExpression>
 
 static QFile logFile;
 
@@ -144,15 +145,36 @@ void Bot::getUpdates() {
                 QJsonObject message = updateObj["message"].toObject();
                 QString text = message["text"].toString();
                 qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
-
+                ///////Аторизація
                 qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << text;
 
-                if (text == "/start") {
-                    handleStartCommand(chatId);
-                } else if (text == "/help") {
-                    handleHelpCommand(chatId);
+                // 🔹 Перевіряємо авторизацію
+                if (!isUserAuthorized(chatId)) {
+                    sendMessage(chatId, "❌ У вас немає доступу до цього бота.");
+                    return;
+                }
+                /////////
+                QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
+
+                // 🔹 Конвертуємо текстові кнопки в команди
+                if (cleanText == "📜 Допомога") cleanText = "/help";
+                if (cleanText == "📋 Список клієнтів") cleanText = "/clients";
+                if (cleanText == "🚀 Почати") cleanText = "/start";
+
+                qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << cleanText;
+
+                if (!cleanText.startsWith("/")) {
+                    sendMessage(chatId, "❌ Виберіть команду з меню!");
                 } else {
-                    sendMessage(chatId, "Ви написали: " + text);
+                    if (cleanText == "/start") {
+                        handleStartCommand(chatId);
+                    } else if (cleanText == "/help") {
+                        handleHelpCommand(chatId);
+                    } else if (cleanText == "/clients") {
+                        handleClientsCommand(chatId);
+                    } else {
+                        sendMessage(chatId, "❌ Невідома команда.");
+                    }
                 }
             }
         }
@@ -165,18 +187,132 @@ void Bot::getUpdates() {
 
 void Bot::handleStartCommand(qint64 chatId) {
     qInfo() << "✅ Виконання команди /start для користувача" << chatId;
-    sendMessage(chatId, "Привіт! Я бот Shadowfax. Чим можу допомогти?");
+
+    QJsonObject keyboard;
+    QJsonArray keyboardArray;
+    QJsonArray row1;
+    QJsonArray row2;
+
+    // Додаємо кнопки з описами замість команд
+    row1.append("📜 Допомога");
+    row1.append("📋 Список клієнтів");
+    row2.append("🚀 Почати");
+
+    keyboardArray.append(row1);
+    keyboardArray.append(row2);
+
+    keyboard["keyboard"] = keyboardArray;
+    keyboard["resize_keyboard"] = true;
+    keyboard["one_time_keyboard"] = false;
+
+    QJsonObject payload;
+    payload["chat_id"] = chatId;
+    payload["text"] = "Привіт! Виберіть дію:";
+    payload["reply_markup"] = keyboard;
+
+    sendMessageWithKeyboard(payload);
 }
+
 
 void Bot::handleHelpCommand(qint64 chatId) {
     qInfo() << "✅ Виконання команди /help для користувача" << chatId;
 
     QString helpText = "❓ Доступні команди:\n"
                        "/start - Почати взаємодію з ботом\n"
-                       "/help - Показати список команд\n";
+                       "/help - Показати список команд\n"
+                       "/clients - показати список клієнтів\n";
 
     sendMessage(chatId, helpText);
 }
+
+void Bot::handleClientsCommand(qint64 chatId) {
+    lastChatId = chatId;  // Зберігаємо правильний Chat ID
+    fetchClientsList();
+    sendMessage(chatId, "🔄 Отримую список клієнтів...");
+}
+
+
+void Bot::fetchClientsList()
+{
+    QUrl url("http://localhost:8181/clients");  // Адреса API
+    QNetworkRequest request(url);
+
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = networkManager->get(request);
+
+    // Обробляємо відповідь
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            processClientsResponse(responseData);
+        } else {
+            qWarning() << "HTTP Error:" << reply->errorString();
+        }
+        reply->deleteLater();
+    });
+}
+
+void Bot::processClientsResponse(const QByteArray &data) {
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+    if (!jsonDoc.isObject()) {
+        qWarning() << "Invalid JSON response";
+        return;
+    }
+
+    QJsonObject jsonObj = jsonDoc.object();
+    if (!jsonObj.contains("data") || !jsonObj["data"].isArray()) {
+        qWarning() << "Invalid JSON format";
+        return;
+    }
+
+    QJsonArray clientsArray = jsonObj["data"].toArray();
+    QStringList clientsList;
+
+    for (const QJsonValue &client : clientsArray) {
+        QJsonObject obj = client.toObject();
+        clientsList.append(QString("%1: %2").arg(obj["id"].toInt()).arg(obj["name"].toString()));
+    }
+
+    QString responseMessage = "📋 Список клієнтів:\n" + clientsList.join("\n");
+    qDebug() << "Clients list fetched successfully";
+
+    // ✅ Використовуємо правильний Chat ID для відповіді
+    sendMessage(lastChatId, responseMessage);
+}
+
+void Bot::sendMessageWithKeyboard(const QJsonObject &payload) {
+    QString url = QString("https://api.telegram.org/bot%1/sendMessage").arg(botToken);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = networkManager->post(request, QJsonDocument(payload).toJson());
+
+    connect(reply, &QNetworkReply::finished, this, [reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "Помилка при відправці повідомлення:" << reply->errorString();
+        } else {
+            qInfo() << "✅ Меню команд успішно відправлено.";
+        }
+        reply->deleteLater();
+    });
+}
+
+bool Bot::isUserAuthorized(qint64 chatId) {
+    QSettings settings(QCoreApplication::applicationDirPath() + "/config/config.ini", QSettings::IniFormat);
+    QStringList whitelist = settings.value("Auth/whitelist").toString().split(",", Qt::SkipEmptyParts);
+
+    // Якщо список порожній – усі мають доступ
+    if (whitelist.isEmpty()) {
+        return true;
+    }
+
+    return whitelist.contains(QString::number(chatId));
+}
+
+
+
 
 
 void Bot::sendMessage(qint64 chatId, const QString &text) {
