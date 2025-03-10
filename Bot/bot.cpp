@@ -198,6 +198,7 @@ void Bot::getUpdates() {
 
 
 
+
 void Bot::handleStartCommand(qint64 chatId) {
     qInfo() << "✅ Виконання команди /start для користувача" << chatId;
 
