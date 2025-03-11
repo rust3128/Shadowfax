@@ -11,7 +11,7 @@ class Bot : public QObject {
 public:
     explicit Bot(QObject *parent = nullptr);
     void startPolling();  // Почати отримання повідомлень
-    void sendMessage(qint64 chatId, const QString &text);  // Відправити повідомлення
+    void sendMessage(qint64 chatId, const QString &text, const QString &parseMode);  // Відправити повідомлення
 
     static void initLogging();  // 🔹 Метод ініціалізації логування
 
@@ -29,6 +29,12 @@ private:
     void sendMessageWithKeyboard(const QJsonObject &payload);
     bool isUserAuthorized(qint64 chatId);           // Перевірка авторізації
     void processClientsList(qint64 chatId, const QByteArray &data);
+    bool authorizeUser(qint64 chatId);               // авторизація користувача
+    void processMessage(qint64 chatId, const QString &cleanText);   //обробка команд і кнопок
+    void processClientSelection(qint64 chatId, const QString &clientName); //обробка вибору клієнта
+    void processTerminalInput(qint64 chatId, const QString &cleanText);     //обробка номера терміналу
+    void fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId); // * @brief Виконує запит у Palantír для отримання інформації про термінал
+    void processTerminalInfo(qint64 chatId, const QByteArray &data);        //@brief Обробляє відповідь Palantír із інформацією про термінал
 private:
     QNetworkAccessManager *networkManager;
     QString botToken;

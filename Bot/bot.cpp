@@ -57,7 +57,7 @@ void Bot::initLogging() {
     qDebug() << "Logging initialized. Log file:" << logFilePath;
 }
 
-/**
+
 /**
  * @brief Завантажує токен бота з `config.ini` або створює файл, якщо його немає.
  */
@@ -109,17 +109,21 @@ void Bot::startPolling() {
     getUpdates();
 }
 
+
+
 void Bot::getUpdates() {
     QString url = QString("https://api.telegram.org/bot%1/getUpdates?offset=%2&timeout=30")
     .arg(botToken)
         .arg(lastUpdateId + 1);
+
+    qDebug() << "🔹 Виконуємо запит до Telegram API:" << url;
 
     QNetworkRequest request(url);
     QNetworkReply *reply = networkManager->get(request);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "Помилка мережі:" << reply->errorString();
+            qWarning() << "❌ Помилка мережі:" << reply->errorString();
             reply->deleteLater();
             QTimer::singleShot(5000, this, &Bot::getUpdates);
             return;
@@ -129,71 +133,215 @@ void Bot::getUpdates() {
         QJsonDocument jsonResponse = QJsonDocument::fromJson(responseData);
         QJsonObject jsonObject = jsonResponse.object();
 
+        qDebug() << "📩 Отримано відповідь від Telegram API:" << jsonObject;
+
         if (!jsonObject["ok"].toBool()) {
-            qWarning() << "Telegram API повернуло помилку!";
+            qWarning() << "❌ Telegram API повернуло помилку!" << jsonObject;
             reply->deleteLater();
             return;
         }
 
         QJsonArray updates = jsonObject["result"].toArray();
+        qDebug() << "🔹 Кількість нових повідомлень:" << updates.size();
+
         for (const QJsonValue &update : updates) {
             QJsonObject updateObj = update.toObject();
             qint64 updateId = updateObj["update_id"].toVariant().toLongLong();
 
             if (updateId > lastUpdateId) {
                 lastUpdateId = updateId;
+                qDebug() << "🔹 Оновлено останній updateId:" << lastUpdateId;
 
-                QJsonObject message = updateObj["message"].toObject();
-                QString text = message["text"].toString();
-                qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
+                QJsonObject message;
 
-                /////// Авторизація
-                qInfo() << "?? Отримано повідомлення від" << chatId << ":" << text;
+                // 🔹 Перевіряємо, яке поле є: `message` або `edited_message`
+                if (updateObj.contains("message")) {
+                    message = updateObj["message"].toObject();
+                } else if (updateObj.contains("edited_message")) {
+                    message = updateObj["edited_message"].toObject();
+                }
 
-                if (!isUserAuthorized(chatId)) {
-                    sendMessage(chatId, "? У вас немає доступу до цього бота.");
+                if (message.isEmpty()) {
+                    qWarning() << "❌ Отримано оновлення без `message` або `edited_message`. Повне оновлення:" << updateObj;
                     return;
                 }
-                /////////
+
+                // 🔹 Отримуємо chat_id
+                qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
+
+                if (chatId == 0) {
+                    qWarning() << "❌ Помилка: отримано chatId = 0! Повне повідомлення:" << message;
+                    return;
+                }
+
+                QString text = message["text"].toString();
+                qDebug() << "🔹 Отримано текстове повідомлення:" << text;
+
+                // 🔹 Авторизація
+                if (!authorizeUser(chatId)) {
+                    qWarning() << "❌ Доступ заборонено для користувача:" << chatId;
+                    sendMessage(chatId, "❌ У вас немає доступу до цього бота.","");
+                    return;
+                }
+
                 QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
-                // 🔹 Конвертуємо текстові кнопки в команди
-                if (cleanText == "📜 Допомога") cleanText = "/help";
-                if (cleanText == "📋 Список клієнтів") cleanText = "/clients";
-                if (cleanText == "🚀 Почати") cleanText = "/start";
-                if (cleanText == "🔙 Головне меню") cleanText = "/start";  // Додаємо обробку кнопки "🔙 Головне меню"
+                qInfo() << "📩 Обробка повідомлення від" << chatId << ":" << cleanText;
 
-                if (clientIdMap.contains(cleanText)) {
-                    qint64 clientId = clientIdMap[cleanText];
-                    lastSelectedClientId = clientId;  // Зберігаємо вибраного клієнта
-
-                    qInfo() << "✅ Користувач вибрав клієнта:" << cleanText << "(ID:" << clientId << ")";
-
-                    // ?? Відправляємо повідомлення з проханням ввести номер терміналу
-                    sendMessage(chatId, "🏪 Мережа АЗС - " + cleanText + ".\nВкажіть номер терміналу:");
-                    waitingForTerminal = true;  // Бот очікує введення номера терміналу
-                }
-
-
-                if (!cleanText.startsWith("/")) {
-                    sendMessage(chatId, "? Виберіть команду з меню!");
-                } else {
-                    if (cleanText == "/start") {
-                        handleStartCommand(chatId);
-                    } else if (cleanText == "/help") {
-                        handleHelpCommand(chatId);
-                    } else if (cleanText == "/clients") {
-                        handleClientsCommand(chatId);
-                    } else {
-                        sendMessage(chatId, "? Невідома команда.");
-                    }
-                }
-
+                // 🔹 Обробка команд та кнопок
+                processMessage(chatId, cleanText);
             }
         }
 
         reply->deleteLater();
         QTimer::singleShot(2000, this, &Bot::getUpdates);
     });
+}
+
+
+// Метод authorizeUser() (авторизація користувача)
+bool Bot::authorizeUser(qint64 chatId) {
+    if (!isUserAuthorized(chatId)) {
+        qWarning() << "❌ Доступ заборонено для користувача:" << chatId;
+        return false;
+    }
+    return true;
+}
+//Метод processMessage() (обробка команд і кнопок)
+void Bot::processMessage(qint64 chatId, const QString &text) {
+    QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
+
+    // 🔹 Конвертуємо текстові кнопки в команди
+    if (cleanText == "📜 Допомога") cleanText = "/help";
+    if (cleanText == "📋 Список клієнтів") cleanText = "/clients";
+    if (cleanText == "🚀 Почати") cleanText = "/start";
+    if (cleanText == "🔙 Головне меню") cleanText = "/start";  // Додаємо обробку кнопки "🔙 Головне меню"
+
+    qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << cleanText;
+
+    // 🔹 Якщо бот очікує номер терміналу – обробляємо введення
+    if (waitingForTerminal) {
+        processTerminalInput(chatId, cleanText);
+        return;
+    }
+
+    // 🔹 Якщо натиснута кнопка клієнта – обробляємо вибір
+    if (clientIdMap.contains(cleanText)) {
+        processClientSelection(chatId, cleanText);
+        return;
+    }
+
+    // 🔹 Обробка команд
+    if (!cleanText.startsWith("/")) {
+        sendMessage(chatId, "❌ Виберіть команду з меню!","");
+    } else if (cleanText == "/start") {
+        handleStartCommand(chatId);
+    } else if (cleanText == "/help") {
+        handleHelpCommand(chatId);
+    } else if (cleanText == "/clients") {
+        handleClientsCommand(chatId);
+    } else {
+        sendMessage(chatId, "❌ Невідома команда.","");
+    }
+}
+
+//Метод processClientSelection() (обробка вибору клієнта)
+void Bot::processClientSelection(qint64 chatId, const QString &clientName) {
+    qint64 clientId = clientIdMap[clientName];
+    lastSelectedClientId = clientId;
+
+    qInfo() << "✅ Користувач вибрав клієнта:" << clientName << "(ID:" << clientId << ")";
+
+    sendMessage(chatId, "🏪 Мережа АЗС - " + clientName + ".\nВкажіть номер терміналу:","");
+    waitingForTerminal = true;
+}
+/**
+ * @brief Обробляє введений номер терміналу
+ * @param chatId ID чату користувача
+ * @param cleanText Введений текст (номер терміналу)
+ */
+void Bot::processTerminalInput(qint64 chatId, const QString &cleanText) {
+    bool ok;
+    int terminalNumber = cleanText.toInt(&ok);
+
+    if (ok) {
+        qInfo() << "✅ Отримано номер терміналу:" << terminalNumber;
+        waitingForTerminal = false;  // Завершуємо очікування
+
+        // 🔹 Виконуємо запит у Palantír
+        fetchTerminalInfo(chatId, lastSelectedClientId, terminalNumber);
+    } else {
+        sendMessage(chatId, "❌ Будь ласка, введіть **числовий номер терміналу**.","");
+    }
+}
+
+/**
+ * @brief Виконує запит у Palantír для отримання інформації про термінал
+ * @param chatId ID чату користувача
+ * @param clientId ID вибраного клієнта
+ * @param terminalId Номер терміналу
+ */
+void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
+    // 🔹 Формуємо URL для запиту до API Palantír
+    QUrl url(QString("http://localhost:8181/terminal_info?client_id=%1&terminal_id=%2")
+                 .arg(clientId).arg(terminalId));
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, chatId]() {
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            processTerminalInfo(chatId, responseData);
+        } else {
+            qWarning() << "❌ Помилка отримання даних про термінал:" << reply->errorString();
+            sendMessage(chatId, "❌ Не вдалося отримати інформацію про термінал.","");
+        }
+        reply->deleteLater();
+    });
+}
+
+/**
+ * @brief Обробляє відповідь Palantír із інформацією про термінал
+ * @param chatId ID чату користувача
+ * @param data Отримана JSON-відповідь
+ */
+void Bot::processTerminalInfo(qint64 chatId, const QByteArray &data) {
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+    if (!jsonDoc.isObject()) {
+        qWarning() << "❌ Невірний формат JSON!";
+        sendMessage(chatId, "❌ Сталася помилка при отриманні інформації.","");
+        return;
+    }
+
+    QJsonObject jsonObj = jsonDoc.object();
+
+    // 🔹 Перевіряємо, чи є помилка у відповіді
+    if (jsonObj.contains("error")) {
+        sendMessage(chatId, "❌ " + jsonObj["error"].toString(),"");
+        return;
+    }
+
+    // 🔹 Формуємо відповідь
+    QString clientName = jsonObj["client_name"].toString();
+    int terminalId = jsonObj["terminal_id"].toInt();
+    QString address = jsonObj["adress"].toString();
+    QString phone = jsonObj["phone"].toString();
+
+    // 🔹 Робимо номер клікабельним через HTML
+    QString responseMessage = QString(
+                                  "🏪 <b>Мережа АЗС:</b> %1\n"
+                                  "⛽ <b>Номер терміналу:</b> %2\n"
+                                  "📍 <b>Адреса:</b> %3\n"
+                                  "📞 <b>Телефон:</b> <a href=\"tel:%4\">%4</a>"
+                                  ).arg(clientName).arg(terminalId).arg(address).arg(phone);
+
+    // 🔹 Відправляємо повідомлення з HTML-форматуванням
+    sendMessage(chatId, responseMessage, "HTML");
+
+    // 🔹 Після виводу інформації повертаємо головне меню
+    handleStartCommand(chatId);
 }
 
 
@@ -236,7 +384,7 @@ void Bot::handleHelpCommand(qint64 chatId) {
                        "/help - Показати список команд\n"
                        "/clients - показати список клієнтів\n";
 
-    sendMessage(chatId, helpText);
+    sendMessage(chatId, helpText,"");
 }
 
 // void Bot::handleClientsCommand(qint64 chatId) {
@@ -261,7 +409,7 @@ void Bot::handleClientsCommand(qint64 chatId) {
             processClientsList(chatId, responseData);
         } else {
             qWarning() << "? Помилка отримання списку клієнтів:" << reply->errorString();
-            sendMessage(chatId, "? Помилка отримання даних.");
+            sendMessage(chatId, "? Помилка отримання даних.","");
         }
         reply->deleteLater();
     });
@@ -271,14 +419,14 @@ void Bot::processClientsList(qint64 chatId, const QByteArray &data) {
     QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
     if (!jsonDoc.isObject()) {
         qWarning() << "❌ Невірний формат JSON!";
-        sendMessage(chatId, "❌ Сталася помилка під час отримання клієнтів.");
+        sendMessage(chatId, "❌ Сталася помилка під час отримання клієнтів.","");
         return;
     }
 
     QJsonObject jsonObj = jsonDoc.object();
     if (!jsonObj.contains("data") || !jsonObj["data"].isArray()) {
         qWarning() << "❌ Відсутній масив `data` у відповіді!";
-        sendMessage(chatId, "❌ Дані про клієнтів недоступні.");
+        sendMessage(chatId, "❌ Дані про клієнтів недоступні.","");
         return;
     }
 
@@ -378,7 +526,7 @@ void Bot::processClientsResponse(const QByteArray &data) {
     qDebug() << "Clients list fetched successfully";
 
     // ✅ Використовуємо правильний Chat ID для відповіді
-    sendMessage(lastChatId, responseMessage);
+    sendMessage(lastChatId, responseMessage,"");
 }
 
 void Bot::sendMessageWithKeyboard(const QJsonObject &payload) {
@@ -411,24 +559,19 @@ bool Bot::isUserAuthorized(qint64 chatId) {
     return whitelist.contains(QString::number(chatId));
 }
 
-
-
-
-
-void Bot::sendMessage(qint64 chatId, const QString &text) {
+void Bot::sendMessage(qint64 chatId, const QString &text, const QString &parseMode = "") {
     QString url = QString("https://api.telegram.org/bot%1/sendMessage")
     .arg(botToken);
 
     QJsonObject payload;
     payload["chat_id"] = chatId;
     payload["text"] = text;
+    if (!parseMode.isEmpty()) {
+        payload["parse_mode"] = parseMode;  // 🔹 Важливо для форматування!
+    }
 
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-    qDebug() << "📤 Відправка повідомлення...";
-    qDebug() << "🔹 Chat ID:" << chatId;
-    qDebug() << "🔹 Текст:" << text;
 
     QNetworkReply *reply = networkManager->post(request, QJsonDocument(payload).toJson());
 
@@ -441,3 +584,5 @@ void Bot::sendMessage(qint64 chatId, const QString &text) {
         reply->deleteLater();
     });
 }
+
+
