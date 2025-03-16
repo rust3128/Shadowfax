@@ -281,7 +281,6 @@ void Bot::processTerminalInput(qint64 chatId, const QString &cleanText) {
  * @param terminalId Номер терміналу
  */
 void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
-    // 🔹 Формуємо URL для запиту до API Palantír
     QUrl url(QString("http://localhost:8181/terminal_info?client_id=%1&terminal_id=%2")
                  .arg(clientId).arg(terminalId));
 
@@ -293,7 +292,66 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
     connect(reply, &QNetworkReply::finished, this, [this, reply, chatId]() {
         if (reply->error() == QNetworkReply::NoError) {
             QByteArray responseData = reply->readAll();
-            processTerminalInfo(chatId, responseData);
+            QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
+
+            if (!jsonDoc.isObject()) {
+                qWarning() << "❌ Отримано некоректний JSON!";
+                sendMessage(chatId, "❌ Сталася помилка при обробці відповіді сервера.","");
+                return;
+            }
+
+            QJsonObject jsonObj = jsonDoc.object();
+            QString clientName = jsonObj["client_name"].toString();
+            QString adress = jsonObj["adress"].toString();
+            QString phone = jsonObj["phone"].toString();
+            QJsonArray dispensers = jsonObj["dispensers_info"].toArray();
+
+            // 📌 Формуємо текстове повідомлення
+            QString responseText;
+            responseText += QString("🏪 <b>АЗС:</b> %1\n").arg(clientName);
+            responseText += QString("⛽ <b>Термінал:</b> %1\n").arg(jsonObj["terminal_id"].toInt());
+            responseText += QString("📍 <b>Адреса:</b> %1\n").arg(adress);
+            responseText += QString("📞 <b>%1</b>\n\n").arg(phone);
+            responseText += "<b>Конфігурація ПРК</b>\n";
+
+            // 🔹 Перебираємо всі ТРК
+            for (const QJsonValue &dispenserVal : dispensers) {
+                QJsonObject dispenserObj = dispenserVal.toObject();
+                int dispenserId = dispenserObj["dispenser_id"].toInt();
+                QString protocol = dispenserObj["protocol"].toString();
+                int port = dispenserObj["port"].toInt();
+                int speed = dispenserObj["speed"].toInt();
+                int address = dispenserObj["address"].toInt();
+
+                responseText += QString("🔹 <b>ПРК %1:</b> %2, порт %3, швидкість %4, адреса %5\n")
+                                    .arg(dispenserId).arg(protocol).arg(port).arg(speed).arg(address);
+
+                // 🔹 Перебираємо пістолети, якщо є
+                if (dispenserObj.contains("pumps_info")) {
+                    QJsonArray pumps = dispenserObj["pumps_info"].toArray();
+                    for (int i = 0; i < pumps.size(); ++i) {
+                        QJsonObject pumpObj = pumps[i].toObject();
+                        int pumpId = pumpObj["pump_id"].toInt();
+                        int tankId = pumpObj["tank_id"].toInt();
+                        QString fuel = pumpObj["fuel_shortname"].toString();
+
+                        // Використовуємо символи ASCII для гарного форматування
+                        if (i == pumps.size() - 1) {
+                            responseText += QString("  └ 🛠 Пістолет %1 (резервуар %2) – %3\n")
+                                                .arg(pumpId).arg(tankId).arg(fuel);
+                        } else {
+                            responseText += QString("  ├ 🛠 Пістолет %1 (резервуар %2) – %3\n")
+                                                .arg(pumpId).arg(tankId).arg(fuel);
+                        }
+                    }
+                }
+            }
+
+            qDebug() << "📩 Відправляється повідомлення:\n" << responseText;
+
+            // 🔹 Відправляємо форматоване повідомлення в Telegram
+            sendMessage(chatId, responseText, "HTML");
+
         } else {
             qWarning() << "❌ Помилка отримання даних про термінал:" << reply->errorString();
             sendMessage(chatId, "❌ Не вдалося отримати інформацію про термінал.","");
@@ -301,6 +359,8 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
         reply->deleteLater();
     });
 }
+
+
 
 /**
  * @brief Обробляє відповідь Palantír із інформацією про термінал
