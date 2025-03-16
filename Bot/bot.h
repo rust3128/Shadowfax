@@ -11,7 +11,7 @@ class Bot : public QObject {
 public:
     explicit Bot(QObject *parent = nullptr);
     void startPolling();  // Почати отримання повідомлень
-    void sendMessage(qint64 chatId, const QString &text, const QString &parseMode);  // Відправити повідомлення
+    void sendMessage(qint64 chatId, const QString &text, bool isHtml); // Відправити повідомлення
 
     static void initLogging();  // 🔹 Метод ініціалізації логування
 

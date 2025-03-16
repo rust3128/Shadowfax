@@ -1,4 +1,3 @@
-
 #include "bot.h"
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,6 +11,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QRegularExpression>
+#include <QUrlQuery>
 
 static QFile logFile;
 
@@ -59,7 +59,7 @@ void Bot::initLogging() {
 
 
 /**
- * @brief Завантажує токен бота з `config.ini` або створює файл, якщо його немає.
+ * @brief Завантажує токен бота з config.ini або створює файл, якщо його немає.
  */
 void Bot::loadBotToken() {
     QString configPath = QCoreApplication::applicationDirPath() + "/config/config.ini";
@@ -67,9 +67,9 @@ void Bot::loadBotToken() {
 
     QFile configFile(configPath);
 
-    // 🔹 Якщо `config.ini` не існує – створюємо його
+    // 🔹 Якщо config.ini не існує – створюємо його
     if (!configFile.exists()) {
-        qWarning() << "Config file not found! Creating `config.ini`...";
+        qWarning() << "Config file not found! Creating config.ini...";
 
         QDir configDir(QFileInfo(configPath).absolutePath());
         if (!configDir.exists()) {
@@ -154,7 +154,7 @@ void Bot::getUpdates() {
 
                 QJsonObject message;
 
-                // 🔹 Перевіряємо, яке поле є: `message` або `edited_message`
+                // 🔹 Перевіряємо, яке поле є: message або edited_message
                 if (updateObj.contains("message")) {
                     message = updateObj["message"].toObject();
                 } else if (updateObj.contains("edited_message")) {
@@ -162,7 +162,7 @@ void Bot::getUpdates() {
                 }
 
                 if (message.isEmpty()) {
-                    qWarning() << "❌ Отримано оновлення без `message` або `edited_message`. Повне оновлення:" << updateObj;
+                    qWarning() << "❌ Отримано оновлення без message або edited_message. Повне оновлення:" << updateObj;
                     return;
                 }
 
@@ -311,7 +311,7 @@ void Bot::processTerminalInfo(qint64 chatId, const QByteArray &data) {
     QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
     if (!jsonDoc.isObject()) {
         qWarning() << "❌ Невірний формат JSON!";
-        sendMessage(chatId, "❌ Сталася помилка при отриманні інформації.","");
+        sendMessage(chatId, "❌ Сталася помилка при отриманні інформації.",false);
         return;
     }
 
@@ -319,7 +319,7 @@ void Bot::processTerminalInfo(qint64 chatId, const QByteArray &data) {
 
     // 🔹 Перевіряємо, чи є помилка у відповіді
     if (jsonObj.contains("error")) {
-        sendMessage(chatId, "❌ " + jsonObj["error"].toString(),"");
+        sendMessage(chatId, "❌ " + jsonObj["error"].toString(), false);
         return;
     }
 
@@ -329,13 +329,20 @@ void Bot::processTerminalInfo(qint64 chatId, const QByteArray &data) {
     QString address = jsonObj["adress"].toString();
     QString phone = jsonObj["phone"].toString();
 
-    // 🔹 Робимо номер клікабельним через HTML
+    // 🔹 Очищуємо номер телефону від зайвих символів (залишаємо тільки цифри та "+")
+    phone.remove(QRegularExpression("[^0-9+]"));  // Новий синтаксис (QRegularExpression)
+
+
     QString responseMessage = QString(
-                                  "🏪 <b>Мережа АЗС:</b> %1\n"
-                                  "⛽ <b>Номер терміналу:</b> %2\n"
-                                  "📍 <b>Адреса:</b> %3\n"
-                                  "📞 <b>Телефон:</b> <a href=\"tel:%4\">%4</a>"
+                                  "🏪 АЗС: %1\n"
+                                  "⛽ Термінал: %2\n"
+                                  "📍 %3\n"
+                                  "📞 %4"
                                   ).arg(clientName).arg(terminalId).arg(address).arg(phone);
+
+
+
+    qDebug() << "📞 Відправляється повідомлення:" << responseMessage;
 
     // 🔹 Відправляємо повідомлення з HTML-форматуванням
     sendMessage(chatId, responseMessage, "HTML");
@@ -343,6 +350,7 @@ void Bot::processTerminalInfo(qint64 chatId, const QByteArray &data) {
     // 🔹 Після виводу інформації повертаємо головне меню
     handleStartCommand(chatId);
 }
+
 
 
 
@@ -425,7 +433,7 @@ void Bot::processClientsList(qint64 chatId, const QByteArray &data) {
 
     QJsonObject jsonObj = jsonDoc.object();
     if (!jsonObj.contains("data") || !jsonObj["data"].isArray()) {
-        qWarning() << "❌ Відсутній масив `data` у відповіді!";
+        qWarning() << "❌ Відсутній масив data у відповіді!";
         sendMessage(chatId, "❌ Дані про клієнтів недоступні.","");
         return;
     }
@@ -559,30 +567,21 @@ bool Bot::isUserAuthorized(qint64 chatId) {
     return whitelist.contains(QString::number(chatId));
 }
 
-void Bot::sendMessage(qint64 chatId, const QString &text, const QString &parseMode = "") {
-    QString url = QString("https://api.telegram.org/bot%1/sendMessage")
-    .arg(botToken);
+void Bot::sendMessage(qint64 chatId, const QString &text, bool isHtml) {
+    QUrl url(QString("https://api.telegram.org/bot%1/sendMessage").arg(botToken));
 
-    QJsonObject payload;
-    payload["chat_id"] = chatId;
-    payload["text"] = text;
-    if (!parseMode.isEmpty()) {
-        payload["parse_mode"] = parseMode;  // 🔹 Важливо для форматування!
+    QUrlQuery query;
+    query.addQueryItem("chat_id", QString::number(chatId));
+    query.addQueryItem("text", text);
+
+    if (isHtml) {
+        query.addQueryItem("parse_mode", "HTML");  // Додаємо підтримку HTML
     }
 
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
 
-    QNetworkReply *reply = networkManager->post(request, QJsonDocument(payload).toJson());
-
-    connect(reply, &QNetworkReply::finished, this, [reply]() {
-        if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "Помилка при відправці повідомлення:" << reply->errorString();
-        } else {
-            qInfo() << "✅ Повідомлення успішно відправлено.";
-        }
-        reply->deleteLater();
-    });
+    QNetworkAccessManager *manager = new QNetworkAccessManager(this);
+    manager->post(request, query.toString(QUrl::FullyEncoded).toUtf8());
 }
-
 
