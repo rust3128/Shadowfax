@@ -297,10 +297,24 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
             if (!jsonDoc.isObject()) {
                 qWarning() << "❌ Отримано некоректний JSON!";
                 sendMessage(chatId, "❌ Сталася помилка при обробці відповіді сервера.","");
+                handleStartCommand(chatId);  // ⬅️ Повертаємо головне меню
+                reply->deleteLater();
                 return;
             }
 
             QJsonObject jsonObj = jsonDoc.object();
+
+            // 🔹 Перевіряємо, чи є помилка у відповіді
+            if (jsonObj.contains("error")) {
+                QString errorMessage = jsonObj["error"].toString();
+                qWarning() << "❌ Сервер повернув помилку:" << errorMessage;
+                sendMessage(chatId, "❌ " + errorMessage, "");
+                handleStartCommand(chatId);  // ⬅️ Повертаємо головне меню
+                reply->deleteLater();
+                return;
+            }
+
+            // ✅ Продовжуємо обробку, якщо помилки немає
             QString clientName = jsonObj["client_name"].toString();
             QString adress = jsonObj["adress"].toString();
             QString phone = jsonObj["phone"].toString();
@@ -355,62 +369,12 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
         } else {
             qWarning() << "❌ Помилка отримання даних про термінал:" << reply->errorString();
             sendMessage(chatId, "❌ Не вдалося отримати інформацію про термінал.","");
+            handleStartCommand(chatId);  // ⬅️ Повертаємо головне меню
         }
         reply->deleteLater();
     });
+    handleStartCommand(chatId);  // ⬅️ Повертаємо головне меню
 }
-
-
-
-/**
- * @brief Обробляє відповідь Palantír із інформацією про термінал
- * @param chatId ID чату користувача
- * @param data Отримана JSON-відповідь
- */
-void Bot::processTerminalInfo(qint64 chatId, const QByteArray &data) {
-    QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
-    if (!jsonDoc.isObject()) {
-        qWarning() << "❌ Невірний формат JSON!";
-        sendMessage(chatId, "❌ Сталася помилка при отриманні інформації.",false);
-        return;
-    }
-
-    QJsonObject jsonObj = jsonDoc.object();
-
-    // 🔹 Перевіряємо, чи є помилка у відповіді
-    if (jsonObj.contains("error")) {
-        sendMessage(chatId, "❌ " + jsonObj["error"].toString(), false);
-        return;
-    }
-
-    // 🔹 Формуємо відповідь
-    QString clientName = jsonObj["client_name"].toString();
-    int terminalId = jsonObj["terminal_id"].toInt();
-    QString address = jsonObj["adress"].toString();
-    QString phone = jsonObj["phone"].toString();
-
-    // 🔹 Очищуємо номер телефону від зайвих символів (залишаємо тільки цифри та "+")
-    phone.remove(QRegularExpression("[^0-9+]"));  // Новий синтаксис (QRegularExpression)
-
-
-    QString responseMessage = QString(
-                                  "🏪 АЗС: %1\n"
-                                  "⛽ Термінал: %2\n"
-                                  "📍 %3\n"
-                                  "📞 %4"
-                                  ).arg(clientName).arg(terminalId).arg(address).arg(phone);
-
-
-
-    qDebug() << "📞 Відправляється повідомлення:" << responseMessage;
-
-    // 🔹 Відправляємо повідомлення з HTML-форматуванням
-    sendMessage(chatId, responseMessage, "HTML");
-
-    // 🔹 Після виводу інформації повертаємо головне меню
-    handleStartCommand(chatId);
-}
-
 
 
 
