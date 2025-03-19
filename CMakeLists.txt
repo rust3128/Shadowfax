@@ -8,6 +8,7 @@ qt_standard_project_setup()
 qt_add_executable(Shadowfax
     main.cpp
     Bot/bot.cpp Bot/bot.h
+    Bot/config.h Bot/config.cpp
 )
 
 target_link_libraries(Shadowfax

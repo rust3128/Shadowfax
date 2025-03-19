@@ -5,13 +5,15 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QTimer>
+#include <tuple>
+#include <QMap>
 
 class Bot : public QObject {
     Q_OBJECT
 public:
     explicit Bot(QObject *parent = nullptr);
     void startPolling();  // Почати отримання повідомлень
-    void sendMessage(qint64 chatId, const QString &text, bool isHtml); // Відправити повідомлення
+    void sendMessage(qint64 chatId, const QString &text, bool isHtml = true); // Відправити повідомлення
 
     static void initLogging();  // 🔹 Метод ініціалізації логування
 
@@ -30,11 +32,17 @@ private:
     bool isUserAuthorized(qint64 chatId);           // Перевірка авторізації
     void processClientsList(qint64 chatId, const QByteArray &data);
     bool authorizeUser(qint64 chatId);               // авторизація користувача
-    void processMessage(qint64 chatId, const QString &cleanText);   //обробка команд і кнопок
+    void processMessage(qint64 chatId, qint64 userId, const QString &text, const QString &firstName, const QString &lastName, const QString &username); //обробка команд і кнопок
+    void requestAdminApproval(qint64 userId, qint64 chatId, const QString &firstName, const QString &lastName, const QString &username);
+    void handleApproveCommand(qint64 chatId, qint64 userId, const QString &text);
+    void handleRejectCommand(qint64 chatId, qint64 userId, const QString &text);
+
+
     void processClientSelection(qint64 chatId, const QString &clientName); //обробка вибору клієнта
     void processTerminalInput(qint64 chatId, const QString &cleanText);     //обробка номера терміналу
     void fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId); // * @brief Виконує запит у Palantír для отримання інформації про термінал
     void processTerminalInfo(qint64 chatId, const QByteArray &data);        //@brief Обробляє відповідь Palantír із інформацією про термінал
+
 private:
     QNetworkAccessManager *networkManager;
     QString botToken;
@@ -43,8 +51,7 @@ private:
     QMap<QString, qint64> clientIdMap;  // Збереження відповідності "Назва клієнта" -> ID
     qint64 lastSelectedClientId = 0;  // ID вибраного клієнта
     bool waitingForTerminal = false;  // Чи очікуємо введення номера терміналу?
-
-
+    QMap<qint64, std::tuple<QString, QString, QString>> lastApprovalRequest;
 };
 
 #endif // BOT_H

@@ -1,4 +1,5 @@
 #include "bot.h"
+#include "config.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -116,7 +117,7 @@ void Bot::getUpdates() {
     .arg(botToken)
         .arg(lastUpdateId + 1);
 
-    qDebug() << "🔹 Виконуємо запит до Telegram API:" << url;
+//    qDebug() << "🔹 Виконуємо запит до Telegram API:" << url;
 
     QNetworkRequest request(url);
     QNetworkReply *reply = networkManager->get(request);
@@ -133,20 +134,20 @@ void Bot::getUpdates() {
         QJsonDocument jsonResponse = QJsonDocument::fromJson(responseData);
         QJsonObject jsonObject = jsonResponse.object();
 
-        qDebug() << "📩 Отримано відповідь від Telegram API:" << jsonObject;
+//        qDebug() << "📩 Отримано відповідь від Telegram API:" << jsonObject;
 
-        if (!jsonObject["ok"].toBool()) {
+        if (!jsonObject.value(QStringLiteral("ok")).toBool()) {
             qWarning() << "❌ Telegram API повернуло помилку!" << jsonObject;
             reply->deleteLater();
             return;
         }
 
-        QJsonArray updates = jsonObject["result"].toArray();
-        qDebug() << "🔹 Кількість нових повідомлень:" << updates.size();
+        QJsonArray updates = jsonObject.value(QStringLiteral("result")).toArray();
+//        qDebug() << "🔹 Кількість нових повідомлень:" << updates.size();
 
         for (const QJsonValue &update : updates) {
             QJsonObject updateObj = update.toObject();
-            qint64 updateId = updateObj["update_id"].toVariant().toLongLong();
+            qint64 updateId = updateObj.value(QStringLiteral("update_id")).toVariant().toLongLong();
 
             if (updateId > lastUpdateId) {
                 lastUpdateId = updateId;
@@ -155,10 +156,10 @@ void Bot::getUpdates() {
                 QJsonObject message;
 
                 // 🔹 Перевіряємо, яке поле є: message або edited_message
-                if (updateObj.contains("message")) {
-                    message = updateObj["message"].toObject();
-                } else if (updateObj.contains("edited_message")) {
-                    message = updateObj["edited_message"].toObject();
+                if (updateObj.contains(QStringLiteral("message"))) {
+                    message = updateObj.value(QStringLiteral("message")).toObject();
+                } else if (updateObj.contains(QStringLiteral("edited_message"))) {
+                    message = updateObj.value(QStringLiteral("edited_message")).toObject();
                 }
 
                 if (message.isEmpty()) {
@@ -166,29 +167,30 @@ void Bot::getUpdates() {
                     return;
                 }
 
-                // 🔹 Отримуємо chat_id
-                qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
+                // 🔹 Отримуємо chat_id та user_id
+                qint64 chatId = message.value(QStringLiteral("chat")).toObject()
+                                    .value(QStringLiteral("id")).toVariant().toLongLong();
+                qint64 userId = message.value(QStringLiteral("from")).toObject()
+                                    .value(QStringLiteral("id")).toVariant().toLongLong();  // ✅ Фікс
+
 
                 if (chatId == 0) {
                     qWarning() << "❌ Помилка: отримано chatId = 0! Повне повідомлення:" << message;
                     return;
                 }
-
-                QString text = message["text"].toString();
+                QString firstName = message["from"].toObject().value("first_name").toString();
+                QString lastName = message["from"].toObject().value("last_name").toString();
+                QString username = message["from"].toObject().value("username").toString();
+                QString text = message.value(QStringLiteral("text")).toString();
                 qDebug() << "🔹 Отримано текстове повідомлення:" << text;
-
-                // 🔹 Авторизація
-                if (!authorizeUser(chatId)) {
-                    qWarning() << "❌ Доступ заборонено для користувача:" << chatId;
-                    sendMessage(chatId, "❌ У вас немає доступу до цього бота.","");
-                    return;
-                }
+                qDebug() << "📩 User ID:" << userId << "| Chat ID:" << chatId;  // ✅ Додаємо в лог userId
 
                 QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
-                qInfo() << "📩 Обробка повідомлення від" << chatId << ":" << cleanText;
+                qInfo() << "📩 Обробка повідомлення від" << userId << "(Chat ID:" << chatId << "):" << cleanText;
 
-                // 🔹 Обробка команд та кнопок
-                processMessage(chatId, cleanText);
+                // 🔹 Передаємо userId у processMessage()
+                processMessage(chatId, userId, text, firstName, lastName, username);
+
             }
         }
 
@@ -198,25 +200,42 @@ void Bot::getUpdates() {
 }
 
 
-// Метод authorizeUser() (авторизація користувача)
-bool Bot::authorizeUser(qint64 chatId) {
-    if (!isUserAuthorized(chatId)) {
-        qWarning() << "❌ Доступ заборонено для користувача:" << chatId;
-        return false;
+void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, const QString &firstName, const QString &lastName, const QString &username) {
+
+    QString blacklistFilePath = QCoreApplication::applicationDirPath() + "/Config/blacklist.txt";
+
+    QFile blacklistFile(blacklistFilePath);
+    if (blacklistFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&blacklistFile);
+        while (!in.atEnd()) {
+            if (in.readLine().trimmed() == QString::number(userId)) {
+                qDebug() << "❌ Користувач " << userId << " у чорному списку! Ігноруємо повідомлення.";
+                blacklistFile.close();
+                return;  // 🔹 Бот просто ігнорує цього користувача
+            }
+        }
+        blacklistFile.close();
     }
-    return true;
-}
-//Метод processMessage() (обробка команд і кнопок)
-void Bot::processMessage(qint64 chatId, const QString &text) {
+
+    // 🔹 Перевіряємо авторизацію
+    if (Config::instance().useAuth()) {
+        if (!isUserAuthorized(userId)) {
+            qDebug() << "❌ Unauthorized user" << userId << "attempted to use the bot.";
+            sendMessage(chatId, "❌ У вас немає доступу до цього бота. Зверніться до адміністратора.");
+
+            requestAdminApproval(userId, chatId, firstName, lastName, username);
+            return;
+        }
+    }
     QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
 
     // 🔹 Конвертуємо текстові кнопки в команди
     if (cleanText == "📜 Допомога") cleanText = "/help";
     if (cleanText == "📋 Список клієнтів") cleanText = "/clients";
     if (cleanText == "🚀 Почати") cleanText = "/start";
-    if (cleanText == "🔙 Головне меню") cleanText = "/start";  // Додаємо обробку кнопки "🔙 Головне меню"
+    if (cleanText == "🔙 Головне меню") cleanText = "/start";
 
-    qInfo() << "📩 Отримано повідомлення від" << chatId << ":" << cleanText;
+    qInfo() << "📩 Отримано повідомлення від" << userId << "(Chat ID:" << chatId << "):" << cleanText;
 
     // 🔹 Якщо бот очікує номер терміналу – обробляємо введення
     if (waitingForTerminal) {
@@ -232,17 +251,22 @@ void Bot::processMessage(qint64 chatId, const QString &text) {
 
     // 🔹 Обробка команд
     if (!cleanText.startsWith("/")) {
-        sendMessage(chatId, "❌ Виберіть команду з меню!","");
+        sendMessage(chatId, "❌ Виберіть команду з меню!");
     } else if (cleanText == "/start") {
         handleStartCommand(chatId);
     } else if (cleanText == "/help") {
         handleHelpCommand(chatId);
     } else if (cleanText == "/clients") {
         handleClientsCommand(chatId);
+    } else if (cleanText.startsWith("/approve ")) {
+        handleApproveCommand(chatId, userId, cleanText);
+    } else if (cleanText.startsWith("/reject ")) {
+        handleRejectCommand(chatId, userId, cleanText);
     } else {
-        sendMessage(chatId, "❌ Невідома команда.","");
+        sendMessage(chatId, "❌ Невідома команда.");
     }
 }
+
 
 //Метод processClientSelection() (обробка вибору клієнта)
 void Bot::processClientSelection(qint64 chatId, const QString &clientName) {
@@ -251,7 +275,7 @@ void Bot::processClientSelection(qint64 chatId, const QString &clientName) {
 
     qInfo() << "✅ Користувач вибрав клієнта:" << clientName << "(ID:" << clientId << ")";
 
-    sendMessage(chatId, "🏪 Мережа АЗС - " + clientName + ".\nВкажіть номер терміналу:","");
+    sendMessage(chatId, "🏪 Мережа АЗС - " + clientName + ".\nВкажіть номер терміналу:");
     waitingForTerminal = true;
 }
 /**
@@ -270,7 +294,7 @@ void Bot::processTerminalInput(qint64 chatId, const QString &cleanText) {
         // 🔹 Виконуємо запит у Palantír
         fetchTerminalInfo(chatId, lastSelectedClientId, terminalNumber);
     } else {
-        sendMessage(chatId, "❌ Будь ласка, введіть **числовий номер терміналу**.","");
+        sendMessage(chatId, "❌ Будь ласка, введіть **числовий номер терміналу**.");
     }
 }
 
@@ -292,7 +316,7 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
     connect(reply, &QNetworkReply::finished, this, [this, reply, chatId, clientId, terminalId]() {
         if (reply->error() != QNetworkReply::NoError) {
             qWarning() << "❌ Помилка отримання даних про термінал:" << reply->errorString();
-            sendMessage(chatId, "❌ Не вдалося отримати інформацію про термінал.","");
+            sendMessage(chatId, "❌ Не вдалося отримати інформацію про термінал.");
             handleStartCommand(chatId);  // ⬅️ Повертаємо головне меню
             reply->deleteLater();
             return;
@@ -304,7 +328,7 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
 
         if (!jsonDoc.isObject()) {
             qWarning() << "❌ Отримано некоректний JSON!";
-            sendMessage(chatId, "❌ Сталася помилка при обробці відповіді сервера.","");
+            sendMessage(chatId, "❌ Сталася помилка при обробці відповіді сервера.");
             handleStartCommand(chatId);
             return;
         }
@@ -315,7 +339,7 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
         if (jsonObj.contains("error")) {
             QString errorMessage = jsonObj["error"].toString();
             qWarning() << "❌ Сервер повернув помилку:" << errorMessage;
-            sendMessage(chatId, "❌ " + errorMessage, "");
+            sendMessage(chatId, "❌ " + errorMessage);
             handleStartCommand(chatId);
             return;
         }
@@ -424,7 +448,7 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
             qDebug() << "📩 Відправляється повідомлення:\n" << responseText;
 
             // 🔹 Відправляємо все одне повідомлення в Telegram
-            sendMessage(chatId, responseText, true);
+            sendMessage(chatId, responseText);
         });
     });
 }
@@ -469,14 +493,9 @@ void Bot::handleHelpCommand(qint64 chatId) {
                        "/help - Показати список команд\n"
                        "/clients - показати список клієнтів\n";
 
-    sendMessage(chatId, helpText,"");
+    sendMessage(chatId, helpText);
 }
 
-// void Bot::handleClientsCommand(qint64 chatId) {
-//     lastChatId = chatId;  // Зберігаємо правильний Chat ID
-//     fetchClientsList();
-//     sendMessage(chatId, "🔄 Отримую список клієнтів...");
-// }
 
 void Bot::handleClientsCommand(qint64 chatId) {
     qInfo() << "? Виконання команди /clients для користувача" << chatId;
@@ -494,7 +513,7 @@ void Bot::handleClientsCommand(qint64 chatId) {
             processClientsList(chatId, responseData);
         } else {
             qWarning() << "? Помилка отримання списку клієнтів:" << reply->errorString();
-            sendMessage(chatId, "? Помилка отримання даних.","");
+            sendMessage(chatId, "? Помилка отримання даних.");
         }
         reply->deleteLater();
     });
@@ -504,14 +523,14 @@ void Bot::processClientsList(qint64 chatId, const QByteArray &data) {
     QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
     if (!jsonDoc.isObject()) {
         qWarning() << "❌ Невірний формат JSON!";
-        sendMessage(chatId, "❌ Сталася помилка під час отримання клієнтів.","");
+        sendMessage(chatId, "❌ Сталася помилка під час отримання клієнтів.");
         return;
     }
 
     QJsonObject jsonObj = jsonDoc.object();
     if (!jsonObj.contains("data") || !jsonObj["data"].isArray()) {
         qWarning() << "❌ Відсутній масив data у відповіді!";
-        sendMessage(chatId, "❌ Дані про клієнтів недоступні.","");
+        sendMessage(chatId, "❌ Дані про клієнтів недоступні.");
         return;
     }
 
@@ -560,11 +579,6 @@ void Bot::processClientsList(qint64 chatId, const QByteArray &data) {
     sendMessageWithKeyboard(payload);
 }
 
-
-
-
-
-
 void Bot::fetchClientsList()
 {
     QUrl url("http://localhost:8181/clients");  // Адреса API
@@ -611,7 +625,7 @@ void Bot::processClientsResponse(const QByteArray &data) {
     qDebug() << "Clients list fetched successfully";
 
     // ✅ Використовуємо правильний Chat ID для відповіді
-    sendMessage(lastChatId, responseMessage,"");
+    sendMessage(lastChatId, responseMessage);
 }
 
 void Bot::sendMessageWithKeyboard(const QJsonObject &payload) {
@@ -632,17 +646,6 @@ void Bot::sendMessageWithKeyboard(const QJsonObject &payload) {
     });
 }
 
-bool Bot::isUserAuthorized(qint64 chatId) {
-    QSettings settings(QCoreApplication::applicationDirPath() + "/config/config.ini", QSettings::IniFormat);
-    QStringList whitelist = settings.value("Auth/whitelist").toString().split(",", Qt::SkipEmptyParts);
-
-    // Якщо список порожній – усі мають доступ
-    if (whitelist.isEmpty()) {
-        return true;
-    }
-
-    return whitelist.contains(QString::number(chatId));
-}
 
 void Bot::sendMessage(qint64 chatId, const QString &text, bool isHtml) {
     QUrl url(QString("https://api.telegram.org/bot%1/sendMessage").arg(botToken));
@@ -662,3 +665,208 @@ void Bot::sendMessage(qint64 chatId, const QString &text, bool isHtml) {
     manager->post(request, query.toString(QUrl::FullyEncoded).toUtf8());
 }
 
+void Bot::requestAdminApproval(qint64 userId, qint64 chatId, const QString &firstName, const QString &lastName, const QString &username) {
+    QString adminsFilePath = QCoreApplication::applicationDirPath() + "/Config/admins.txt";
+
+    QFile file(adminsFilePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "❌ Не вдалося відкрити admins.txt за шляхом:" << adminsFilePath;
+        return;
+    }
+
+    // 🔹 Зберігаємо дані користувача для подальшого запису у `users.txt`
+    lastApprovalRequest[userId] = std::make_tuple(firstName, lastName, username);
+
+    // 🔹 Формуємо текст повідомлення
+    QString userInfo = QString("🔹 Користувач %1 (Chat ID: %2)").arg(userId).arg(chatId);
+
+    if (!firstName.isEmpty()) userInfo += QString("\n   👤 Ім'я: %1").arg(firstName);
+    if (!lastName.isEmpty()) userInfo += QString("\n   🏷 Прізвище: %1").arg(lastName);
+    if (!username.isEmpty()) userInfo += QString("\n   💬 Telegram: @%1").arg(username);
+
+    userInfo += QString("\nВикористовуйте \n/approve %1 для підтвердження або \n/reject %1 для відмови.").arg(userId);
+
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        QString adminId = in.readLine().trimmed();
+        if (!adminId.isEmpty()) {
+            sendMessage(adminId.toLongLong(), userInfo);
+        }
+    }
+
+    file.close();
+}
+
+
+
+bool Bot::isUserAuthorized(qint64 userId) {
+    QString usersFilePath = QCoreApplication::applicationDirPath() + "/Config/users.txt";
+    QString blacklistFilePath = QCoreApplication::applicationDirPath() + "/Config/blacklist.txt";
+
+    // 🔹 Перевіряємо, чи userId у чорному списку
+    QFile blacklistFile(blacklistFilePath);
+    if (blacklistFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&blacklistFile);
+        while (!in.atEnd()) {
+            if (in.readLine().trimmed() == QString::number(userId)) {
+                qDebug() << "❌ Користувач " << userId << " у чорному списку!";
+                blacklistFile.close();
+                return false;
+            }
+        }
+        blacklistFile.close();
+    }
+
+    // 🔹 Адміністратор завжди має доступ
+    if (userId == Config::instance().getAdminID().toLongLong()) {
+        return true;
+    }
+
+    // 🔹 Перевіряємо `users.txt`
+    QFile userFile(usersFilePath);
+    if (!userFile.exists()) {
+        qDebug() << "users.txt не існує, створюємо...";
+        return false;
+    }
+
+    if (!userFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "❌ Не вдалося відкрити users.txt";
+        return false;
+    }
+
+    QTextStream userIn(&userFile);
+    while (!userIn.atEnd()) {
+        QString line = userIn.readLine().trimmed();
+        QStringList parts = line.split("#");
+        QString storedUserId = parts[0].trimmed();  // 🔹 Видаляємо пробіли перед порівнянням
+
+        if (storedUserId == QString::number(userId)) {
+            userFile.close();
+            return true;
+        }
+    }
+
+    userFile.close();
+    return false;
+}
+
+
+void Bot::handleApproveCommand(qint64 chatId, qint64 userId, const QString &text) {
+    QString usersFilePath = QCoreApplication::applicationDirPath() + "/Config/users.txt";
+
+    QStringList parts = text.split(" ");
+    if (parts.size() < 2) {
+        sendMessage(chatId, "❌ Невірний формат. Використовуйте: /approve <user_id>");
+        return;
+    }
+
+    qint64 approvedUserId = parts[1].toLongLong();
+
+    if (isUserAuthorized(approvedUserId)) {
+        sendMessage(chatId, "✅ Користувач " + parts[1] + " вже має доступ.");
+        return;
+    }
+
+    QFile file(usersFilePath);
+    if (!file.open(QIODevice::Append | QIODevice::Text)) {
+        sendMessage(chatId, "❌ Помилка: не вдалося оновити users.txt");
+        return;
+    }
+
+    QTextStream out(&file);
+    out << approvedUserId;
+
+    // 🔹 Додаємо ім'я, прізвище та Telegram username
+    QString userInfo;
+    if (lastApprovalRequest.contains(approvedUserId)) {
+        auto [firstName, lastName, username] = lastApprovalRequest[approvedUserId];
+        if (!firstName.isEmpty()) userInfo += " " + firstName;
+        if (!lastName.isEmpty()) userInfo += " " + lastName;
+        if (!username.isEmpty()) userInfo += " (@" + username + ")";
+    }
+
+    if (!userInfo.isEmpty()) {
+        out << " #" << userInfo.trimmed();
+    }
+
+    out << "\n";
+    file.close();
+
+    sendMessage(chatId, "✅ Користувач " + parts[1] + " успішно авторизований!");
+    sendMessage(approvedUserId, "✅ Адміністратор надав вам доступ до бота.");
+}
+
+
+
+
+void ensureAdminExists() {
+    QString adminsFilePath = QCoreApplication::applicationDirPath() + "/Config/admins.txt";
+
+    QDir dir(QCoreApplication::applicationDirPath() + "/Config");
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+
+    QFile file(adminsFilePath);
+    if (!file.open(QIODevice::ReadWrite | QIODevice::Text)) {
+        qWarning() << "Failed to open admins.txt";
+        return;
+    }
+
+    QTextStream in(&file);
+    bool found = false;
+    QString adminID = Config::instance().getAdminID();
+
+    while (!in.atEnd()) {
+        if (in.readLine().trimmed() == adminID) {
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) {
+        QTextStream out(&file);
+        out << adminID << "\n";
+        qDebug() << "Added default admin in Config/admins.txt:" << adminID;
+    }
+
+    file.close();
+}
+
+void Bot::handleRejectCommand(qint64 chatId, qint64 userId, const QString &text) {
+    QString blacklistFilePath = QCoreApplication::applicationDirPath() + "/Config/blacklist.txt";
+
+    QStringList parts = text.split(" ");
+    if (parts.size() < 2) {
+        sendMessage(chatId, "❌ Невірний формат. Використовуйте: /reject <user_id>");
+        return;
+    }
+
+    qint64 rejectedUserId = parts[1].toLongLong();
+
+    // Перевіряємо, чи користувач уже в blacklist.txt
+    QFile file(blacklistFilePath);
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&file);
+        while (!in.atEnd()) {
+            if (in.readLine().trimmed() == QString::number(rejectedUserId)) {
+                sendMessage(chatId, "❌ Користувач " + parts[1] + " уже заблокований.");
+                file.close();
+                return;
+            }
+        }
+        file.close();
+    }
+
+    // Додаємо userId у blacklist.txt
+    if (!file.open(QIODevice::Append | QIODevice::Text)) {
+        sendMessage(chatId, "❌ Помилка: не вдалося оновити blacklist.txt");
+        return;
+    }
+
+    QTextStream out(&file);
+    out << rejectedUserId << "\n";
+    file.close();
+
+    sendMessage(chatId, "🚫 Користувач " + parts[1] + " заблокований.");
+}
