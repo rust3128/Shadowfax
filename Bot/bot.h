@@ -36,6 +36,11 @@ private:
     void requestAdminApproval(qint64 userId, qint64 chatId, const QString &firstName, const QString &lastName, const QString &username);
     void handleApproveCommand(qint64 chatId, qint64 userId, const QString &text);
     void handleRejectCommand(qint64 chatId, qint64 userId, const QString &text);
+    void handleTerminalSelection(qint64 chatId);
+    void handleAzsList(qint64 chatId);
+    void handleRroInfo(qint64 chatId);
+    void handlePrkInfo(qint64 chatId);
+    void handleReservoirInfo(qint64 chatId);
 
 
     void processClientSelection(qint64 chatId, const QString &clientName); //обробка вибору клієнта
@@ -50,6 +55,7 @@ private:
     qint64 lastChatId = 0;  // Зберігаємо останній Chat ID для відповідей
     QMap<QString, qint64> clientIdMap;  // Збереження відповідності "Назва клієнта" -> ID
     qint64 lastSelectedClientId = 0;  // ID вибраного клієнта
+    qint64 lastSelectedTerminalId;  // ✅ Додаємо збереження вибраного терміналу
     bool waitingForTerminal = false;  // Чи очікуємо введення номера терміналу?
     QMap<qint64, std::tuple<QString, QString, QString>> lastApprovalRequest;
 };
