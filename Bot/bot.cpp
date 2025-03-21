@@ -13,6 +13,7 @@
 #include <QDateTime>
 #include <QRegularExpression>
 #include <QUrlQuery>
+#include <QThread>
 
 static QFile logFile;
 
@@ -248,6 +249,13 @@ void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, cons
         return;
     }
 
+    if (waitingForBroadcastMessage) {
+        waitingForBroadcastMessage = false;  // ✅ Вимикаємо режим очікування тексту
+        startBroadcast(chatId, cleanText);
+        return;
+    }
+
+
     // 🔹 Якщо натиснута кнопка клієнта – обробляємо вибір
     if (clientIdMap.contains(cleanText)) {
         processClientSelection(chatId, cleanText);
@@ -268,25 +276,93 @@ void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, cons
     } else if (cleanText.startsWith("/reject ")) {
         handleRejectCommand(chatId, userId, cleanText);
     } else if (cleanText == "/get_terminal_id") {
-        qDebug() << "✅ Викликано handleTerminalSelection()!";
         handleTerminalSelection(chatId);
     } else if (cleanText == "/get_azs_list") {
-        qDebug() << "✅ Викликано handleAzsList()!";
         handleAzsList(chatId);
     } else if (cleanText == "/get_rro_info") {
-        qDebug() << "✅ Викликано handleRroInfo()!";
         handleRroInfo(chatId);
     } else if (cleanText == "/get_reservoir_info") {
-        qDebug() << "✅ Викликано handleReservoirInfo()!";
         handleReservoirInfo(chatId);
     } else if (cleanText == "/get_prk_info") {
-        qDebug() << "✅ Викликано handlePrkInfo()!";
         handlePrkInfo(chatId);
-    } else {
+    } else if (cleanText == "/broadcast") {
+        handleBroadcastCommand(chatId, userId);
+    }  else {
         sendMessage(chatId, "❌ Невідома команда.");
     }
 
 }
+
+void Bot::startBroadcast(qint64 chatId, const QString &message) {
+    qDebug() << "📢 Починаємо розсилку повідомлення:" << message;
+
+    QFile file("Config/users.txt");
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "❌ Не вдалося відкрити users.txt!";
+        sendMessage(chatId, "❌ Помилка: список користувачів недоступний.");
+        return;
+    }
+
+    QTextStream in(&file);
+    QStringList userIds;
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (!line.isEmpty() && line[0].isDigit()) {  // ✅ Ігноруємо коментарі та порожні рядки
+            userIds.append(line.split(" ").first());  // Беремо тільки user_id (без імені після #)
+        }
+    }
+    file.close();
+
+    if (userIds.isEmpty()) {
+        sendMessage(chatId, "ℹ️ У списку немає користувачів.");
+        return;
+    }
+
+    qDebug() << "👥 Користувачів для розсилки:" << userIds.size();
+
+    // 🔹 Відправляємо кожному користувачу з затримкою
+    for (int i = 0; i < userIds.size(); ++i) {
+        qint64 userId = userIds[i].toLongLong();
+        sendMessage(userId, "📢 " + message);
+        QThread::msleep(1500);  // ✅ 1.5 сек пауза між повідомленнями, щоб уникнути спаму
+    }
+
+    sendMessage(chatId, "✅ Повідомлення розіслано " + QString::number(userIds.size()) + " користувачам.");
+    qDebug() << "✅ Розсилка завершена.";
+}
+
+
+bool Bot::isAdmin(qint64 userId) {
+    QFile file("Config/admins.txt");
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "❌ Не вдалося відкрити файл admins.txt!";
+        return false;
+    }
+
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        if (in.readLine().trimmed() == QString::number(userId)) {
+            file.close();
+            return true;
+        }
+    }
+
+    file.close();
+    return false;
+}
+
+
+void Bot::handleBroadcastCommand(qint64 chatId, qint64 userId) {
+    if (!isAdmin(userId)) {
+        sendMessage(chatId, "❌ У вас немає прав для використання цієї команди.");
+        return;
+    }
+
+    qDebug() << "✅ Адміністратор ініціював розсилку";
+    sendMessage(chatId, "✏️ Введіть текст повідомлення для розсилки:");
+    waitingForBroadcastMessage = true;  // ✅ Вмикаємо режим очікування введення тексту
+}
+
 
 
 //Метод processClientSelection() (обробка вибору клієнта)
@@ -380,19 +456,33 @@ void Bot::handleAzsList(qint64 chatId) {
             return;
         }
 
-        // ✅ Формуємо список АЗС
+        // ✅ Формуємо список АЗС у форматі "terminal_id - name"
         QString responseText = "⛽ <b>Список АЗС</b>\n";
+        int messageLimit = 3500;  // 🔹 Залишаємо запас до 4096 символів
+        int currentLength = responseText.size();
+
         for (const QJsonValue &val : azsList) {
             QJsonObject obj = val.toObject();
-            responseText += QString("🔹 %1 - %2\n")
-                                .arg(obj["terminal_id"].toInt())
-                                .arg(obj["name"].toString());
+            QString line = QString("🔹 %1 - %2\n")
+                               .arg(obj["terminal_id"].toInt())
+                               .arg(obj["name"].toString());
+
+            if (currentLength + line.size() > messageLimit) {
+                sendMessage(chatId, responseText);  // 🔹 Надсилаємо частину списку
+                responseText = "⛽ <b>Список АЗС (продовження)</b>\n";  // 🔹 Починаємо нове повідомлення
+                currentLength = responseText.size();
+            }
+
+            responseText += line;
+            currentLength += line.size();
         }
 
-        qDebug() << "📩 Відправляється повідомлення:\n" << responseText;
-        sendMessage(chatId, responseText);
+        if (!responseText.isEmpty()) {
+            sendMessage(chatId, responseText);  // 🔹 Надсилаємо залишок списку
+        }
     });
 }
+
 
 
 void Bot::handleReservoirInfo(qint64 chatId) {

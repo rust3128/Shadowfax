@@ -41,8 +41,11 @@ private:
     void handleRroInfo(qint64 chatId);
     void handlePrkInfo(qint64 chatId);
     void handleReservoirInfo(qint64 chatId);
+    void handleBroadcastCommand(qint64 chatId, qint64 userId);
+    void startBroadcast(qint64 chatId, const QString &message);
 
 
+    bool isAdmin(qint64 userId);
     void processClientSelection(qint64 chatId, const QString &clientName); //обробка вибору клієнта
     void processTerminalInput(qint64 chatId, const QString &cleanText);     //обробка номера терміналу
     void fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId); // * @brief Виконує запит у Palantír для отримання інформації про термінал
@@ -57,6 +60,8 @@ private:
     qint64 lastSelectedClientId = 0;  // ID вибраного клієнта
     qint64 lastSelectedTerminalId;  // ✅ Додаємо збереження вибраного терміналу
     bool waitingForTerminal = false;  // Чи очікуємо введення номера терміналу?
+    bool waitingForBroadcastMessage = false;
+
     QMap<qint64, std::tuple<QString, QString, QString>> lastApprovalRequest;
 };
 
