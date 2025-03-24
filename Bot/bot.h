@@ -43,7 +43,8 @@ private:
     void handleReservoirInfo(qint64 chatId);
     void handleBroadcastCommand(qint64 chatId, qint64 userId);
     void startBroadcast(qint64 chatId, const QString &message);
-
+    void handleLocationRequest(qint64 chatId);
+    void sendLocation(qint64 chatId, double latitude, double longitude);
 
     bool isAdmin(qint64 userId);
     void processClientSelection(qint64 chatId, const QString &clientName); //обробка вибору клієнта
@@ -63,6 +64,8 @@ private:
     bool waitingForBroadcastMessage = false;
 
     QMap<qint64, std::tuple<QString, QString, QString>> lastApprovalRequest;
+    QMap<qint64, QDateTime> lastActivity;  // Час останньої активності для кожного користувача
+
 };
 
 #endif // BOT_H

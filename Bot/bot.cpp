@@ -118,7 +118,7 @@ void Bot::getUpdates() {
     .arg(botToken)
         .arg(lastUpdateId + 1);
 
-//    qDebug() << "🔹 Виконуємо запит до Telegram API:" << url;
+    qDebug() << "🔹 Виконуємо запит до Telegram API:" << url;
 
     QNetworkRequest request(url);
     QNetworkReply *reply = networkManager->get(request);
@@ -135,64 +135,65 @@ void Bot::getUpdates() {
         QJsonDocument jsonResponse = QJsonDocument::fromJson(responseData);
         QJsonObject jsonObject = jsonResponse.object();
 
-//        qDebug() << "📩 Отримано відповідь від Telegram API:" << jsonObject;
+        qDebug() << "📩 Отримано відповідь від Telegram API:" << jsonObject;
 
-        if (!jsonObject.value(QStringLiteral("ok")).toBool()) {
+        if (!jsonObject["ok"].toBool()) {
             qWarning() << "❌ Telegram API повернуло помилку!" << jsonObject;
             reply->deleteLater();
+            QTimer::singleShot(5000, this, &Bot::getUpdates);
             return;
         }
 
-        QJsonArray updates = jsonObject.value(QStringLiteral("result")).toArray();
-//        qDebug() << "🔹 Кількість нових повідомлень:" << updates.size();
+        QJsonArray updates = jsonObject["result"].toArray();
+        qDebug() << "🔹 Кількість нових повідомлень:" << updates.size();
 
         for (const QJsonValue &update : updates) {
             QJsonObject updateObj = update.toObject();
-            qint64 updateId = updateObj.value(QStringLiteral("update_id")).toVariant().toLongLong();
+            qint64 updateId = updateObj["update_id"].toVariant().toLongLong();
 
-            if (updateId > lastUpdateId) {
+            if (updateId > lastUpdateId)
                 lastUpdateId = updateId;
-                qDebug() << "🔹 Оновлено останній updateId:" << lastUpdateId;
 
-                QJsonObject message;
+            QJsonObject message;
 
-                // 🔹 Перевіряємо, яке поле є: message або edited_message
-                if (updateObj.contains(QStringLiteral("message"))) {
-                    message = updateObj.value(QStringLiteral("message")).toObject();
-                } else if (updateObj.contains(QStringLiteral("edited_message"))) {
-                    message = updateObj.value(QStringLiteral("edited_message")).toObject();
-                }
-
-                if (message.isEmpty()) {
-                    qWarning() << "❌ Отримано оновлення без message або edited_message. Повне оновлення:" << updateObj;
-                    return;
-                }
-
-                // 🔹 Отримуємо chat_id та user_id
-                qint64 chatId = message.value(QStringLiteral("chat")).toObject()
-                                    .value(QStringLiteral("id")).toVariant().toLongLong();
-                qint64 userId = message.value(QStringLiteral("from")).toObject()
-                                    .value(QStringLiteral("id")).toVariant().toLongLong();  // ✅ Фікс
-
-
-                if (chatId == 0) {
-                    qWarning() << "❌ Помилка: отримано chatId = 0! Повне повідомлення:" << message;
-                    return;
-                }
-                QString firstName = message["from"].toObject().value("first_name").toString();
-                QString lastName = message["from"].toObject().value("last_name").toString();
-                QString username = message["from"].toObject().value("username").toString();
-                QString text = message.value(QStringLiteral("text")).toString();
-                qDebug() << "🔹 Отримано текстове повідомлення:" << text;
-                qDebug() << "📩 User ID:" << userId << "| Chat ID:" << chatId;  // ✅ Додаємо в лог userId
-
-                QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
-                qInfo() << "📩 Обробка повідомлення від" << userId << "(Chat ID:" << chatId << "):" << cleanText;
-
-                // 🔹 Передаємо userId у processMessage()
-                processMessage(chatId, userId, text, firstName, lastName, username);
-
+            // 🔍 Шукаємо або message, або edited_message
+            if (updateObj.contains("message")) {
+                message = updateObj["message"].toObject();
+            } else if (updateObj.contains("edited_message")) {
+                message = updateObj["edited_message"].toObject();
+            } else {
+                // 🟡 Ігноруємо інші типи оновлень (наприклад, my_chat_member)
+                qWarning() << "❌ Отримано оновлення без message або edited_message. Повне оновлення:" << updateObj;
+                continue;  // ✅ Продовжуємо цикл
             }
+
+            if (message.isEmpty()) {
+                qWarning() << "⚠️ message порожнє.";
+                continue;
+            }
+
+            // 🔹 Обробка чату
+            qint64 chatId = message["chat"].toObject()["id"].toVariant().toLongLong();
+            if (chatId == 0) {
+                qWarning() << "❌ Помилка: отримано chatId = 0! Повне повідомлення:" << message;
+                continue;
+            }
+
+            QString text = message["text"].toString();
+            qDebug() << "🔹 Отримано текстове повідомлення:" << text;
+
+            // 🔍 Витягуємо додаткову інформацію про користувача
+            QJsonObject from = message["from"].toObject();
+            qint64 userId = from["id"].toVariant().toLongLong();
+            QString firstName = from["first_name"].toString();
+            QString lastName = from["last_name"].toString();
+            QString username = from["username"].toString();
+
+            QString cleanText = text.simplified().trimmed();
+            qInfo() << "📩 Обробка повідомлення від" << userId << "(Chat ID:" << chatId << "):" << cleanText;
+
+            // 🔁 Передаємо повідомлення на обробку
+            processMessage(chatId, userId, text, firstName, lastName, username);
         }
 
         reply->deleteLater();
@@ -201,7 +202,33 @@ void Bot::getUpdates() {
 }
 
 
-void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, const QString &firstName, const QString &lastName, const QString &username) {
+
+void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text,
+                         const QString &firstName, const QString &lastName, const QString &username)
+{
+    // 🔹 Поточний час
+    QDateTime now = QDateTime::currentDateTime();
+
+    // 🔹 Перевірка часу останньої активності (лише якщо запис існує)
+    if (lastActivity.contains(chatId)) {
+        QDateTime previous = lastActivity[chatId];
+        if (previous.secsTo(now) > 1800) {  // 30 хвилин
+            qDebug() << "⏳ Бездіяльність понад 30 хв. Скидаємо стан користувача" << chatId;
+
+            lastSelectedClientId = 0;
+            lastSelectedTerminalId = 0;
+            waitingForTerminal = false;
+            waitingForBroadcastMessage = false;
+
+            sendMessage(chatId, "⏳ Ви не працювали з ботом більше 30 хв. Стан скинуто.");
+            handleStartCommand(chatId);
+            lastActivity[chatId] = now;  // обов'язково оновлюємо
+            return;
+        }
+    }
+
+    // 🔄 Якщо запису ще не було — вважаємо, що користувач активний
+    lastActivity[chatId] = now;
 
     QString blacklistFilePath = QCoreApplication::applicationDirPath() + "/Config/blacklist.txt";
 
@@ -212,25 +239,24 @@ void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, cons
             if (in.readLine().trimmed() == QString::number(userId)) {
                 qDebug() << "❌ Користувач " << userId << " у чорному списку! Ігноруємо повідомлення.";
                 blacklistFile.close();
-                return;  // 🔹 Бот просто ігнорує цього користувача
+                return;
             }
         }
         blacklistFile.close();
     }
 
-    // 🔹 Перевіряємо авторизацію
     if (Config::instance().useAuth()) {
         if (!isUserAuthorized(userId)) {
             qDebug() << "❌ Unauthorized user" << userId << "attempted to use the bot.";
             sendMessage(chatId, "❌ У вас немає доступу до цього бота. Зверніться до адміністратора.");
-
             requestAdminApproval(userId, chatId, firstName, lastName, username);
             return;
         }
     }
-    QString cleanText = text.simplified().trimmed();  // Видаляємо зайві пробіли
 
-    // 🔹 Конвертуємо текстові кнопки в команди
+    QString cleanText = text.simplified().trimmed();
+
+    // 🔹 Конвертація кнопок у команди
     if (cleanText == "📜 Допомога") cleanText = "/help";
     if (cleanText == "📋 Список клієнтів") cleanText = "/clients";
     if (cleanText == "🚀 Почати") cleanText = "/start";
@@ -240,29 +266,30 @@ void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, cons
     if (cleanText == "💳 РРО") cleanText = "/get_rro_info";
     if (cleanText == "🛢 Резервуари") cleanText = "/get_reservoir_info";
     if (cleanText == "⛽ ПРК") cleanText = "/get_prk_info";
+    if (cleanText == "📍 Показати на карті") cleanText = "/show_location";
 
     qInfo() << "📩 Отримано повідомлення від" << userId << "(Chat ID:" << chatId << "):" << cleanText;
 
-    // 🔹 Якщо бот очікує номер терміналу – обробляємо введення
+    // 🔹 Очікування номера терміналу
     if (waitingForTerminal) {
         processTerminalInput(chatId, cleanText);
         return;
     }
 
+    // 🔹 Очікування тексту для розсилки
     if (waitingForBroadcastMessage) {
-        waitingForBroadcastMessage = false;  // ✅ Вимикаємо режим очікування тексту
+        waitingForBroadcastMessage = false;
         startBroadcast(chatId, cleanText);
         return;
     }
 
-
-    // 🔹 Якщо натиснута кнопка клієнта – обробляємо вибір
+    // 🔹 Вибір клієнта
     if (clientIdMap.contains(cleanText)) {
         processClientSelection(chatId, cleanText);
         return;
     }
 
-    // 🔹 Обробка команд
+    // 🔹 Команди
     if (!cleanText.startsWith("/")) {
         sendMessage(chatId, "❌ Виберіть команду з меню!");
     } else if (cleanText == "/start") {
@@ -287,11 +314,95 @@ void Bot::processMessage(qint64 chatId, qint64 userId, const QString &text, cons
         handlePrkInfo(chatId);
     } else if (cleanText == "/broadcast") {
         handleBroadcastCommand(chatId, userId);
-    }  else {
+    } else if (cleanText == "/show_location") {
+        handleLocationRequest(chatId);
+    } else {
         sendMessage(chatId, "❌ Невідома команда.");
     }
-
 }
+
+
+void Bot::handleLocationRequest(qint64 chatId) {
+    qDebug() << "📍 Запит на геолокацію для терміналу" << lastSelectedTerminalId;
+
+    QUrl url(QString("http://localhost:8181/terminal_info?client_id=%1&terminal_id=%2")
+                 .arg(lastSelectedClientId)
+                 .arg(lastSelectedTerminalId));
+
+    QNetworkRequest request(url);
+    QNetworkReply *reply = networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, chatId]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "❌ Помилка при отриманні координат:" << reply->errorString();
+            sendMessage(chatId, "❌ Не вдалося отримати координати.");
+            reply->deleteLater();
+            return;
+        }
+
+        QByteArray data = reply->readAll();
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        reply->deleteLater();
+
+        if (!jsonDoc.isObject()) {
+            qWarning() << "❌ Некоректна відповідь сервера.";
+            sendMessage(chatId, "❌ Сталася помилка.");
+            return;
+        }
+
+        QJsonObject obj = jsonDoc.object();
+        if (!obj.contains("latitude") || !obj.contains("longitude")) {
+            sendMessage(chatId, "ℹ️ Відсутні координати для цієї АЗС.");
+            return;
+        }
+
+        double lat = obj["latitude"].toDouble();
+        double lon = obj["longitude"].toDouble();
+
+        if (lat == 0.0 && lon == 0.0) {
+            sendMessage(chatId, "ℹ️ Для цієї АЗС координати не задані.");
+            return;
+        }
+
+        // ✅ Надсилаємо геопозицію
+        sendLocation(chatId, lat, lon);
+
+        // ✅ Після карти надсилаємо опис
+        QString responseText;
+        responseText += QString("🏪 <b>%1</b> ").arg(obj["client_name"].toString());
+        responseText += QString("⛽ <b>Термінал:</b> %1\n").arg(obj["terminal_id"].toInt());
+        responseText += QString("📍 %1\n").arg(obj["adress"].toString());
+        responseText += QString("📞 <code>%1</code>\n").arg(obj["phone"].toString());
+
+        sendMessage(chatId, responseText);
+    });
+}
+
+
+void Bot::sendLocation(qint64 chatId, double latitude, double longitude) {
+    QUrl url(QString("https://api.telegram.org/bot%1/sendLocation").arg(botToken));
+
+    QJsonObject payload;
+    payload["chat_id"] = chatId;
+    payload["latitude"] = latitude;
+    payload["longitude"] = longitude;
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply *reply = networkManager->post(request, QJsonDocument(payload).toJson());
+
+    connect(reply, &QNetworkReply::finished, this, [reply]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "❌ Помилка надсилання локації:" << reply->errorString();
+        } else {
+            qDebug() << "📍 Локацію успішно надіслано.";
+        }
+        reply->deleteLater();
+    });
+}
+
+
 
 void Bot::startBroadcast(qint64 chatId, const QString &message) {
     qDebug() << "📢 Починаємо розсилку повідомлення:" << message;
@@ -307,8 +418,8 @@ void Bot::startBroadcast(qint64 chatId, const QString &message) {
     QStringList userIds;
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();
-        if (!line.isEmpty() && line[0].isDigit()) {  // ✅ Ігноруємо коментарі та порожні рядки
-            userIds.append(line.split(" ").first());  // Беремо тільки user_id (без імені після #)
+        if (!line.isEmpty() && line[0].isDigit()) {
+            userIds.append(line.split(" ").first());
         }
     }
     file.close();
@@ -320,16 +431,35 @@ void Bot::startBroadcast(qint64 chatId, const QString &message) {
 
     qDebug() << "👥 Користувачів для розсилки:" << userIds.size();
 
-    // 🔹 Відправляємо кожному користувачу з затримкою
     for (int i = 0; i < userIds.size(); ++i) {
         qint64 userId = userIds[i].toLongLong();
-        sendMessage(userId, "📢 " + message);
-        QThread::msleep(1500);  // ✅ 1.5 сек пауза між повідомленнями, щоб уникнути спаму
+
+        QUrl url(QString("https://api.telegram.org/bot%1/sendMessage").arg(botToken));
+        QNetworkRequest request(url);
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+        QJsonObject payload;
+        payload["chat_id"] = userId;
+        payload["text"] = "📢 " + message;
+        payload["parse_mode"] = "HTML";  // ✅ Щоб підтримувались перенос рядків
+
+        QNetworkReply *reply = networkManager->post(request, QJsonDocument(payload).toJson());
+
+        connect(reply, &QNetworkReply::finished, this, [reply]() {
+            if (reply->error() != QNetworkReply::NoError) {
+                qWarning() << "❌ Не вдалося надіслати повідомлення:" << reply->errorString();
+            } else {
+                qDebug() << "✅ Повідомлення надіслано.";
+            }
+            reply->deleteLater();
+        });
+
+        QThread::msleep(1500);  // ⏱ Пауза між повідомленнями
     }
 
     sendMessage(chatId, "✅ Повідомлення розіслано " + QString::number(userIds.size()) + " користувачам.");
-    qDebug() << "✅ Розсилка завершена.";
 }
+
 
 
 bool Bot::isAdmin(qint64 userId) {
@@ -441,7 +571,6 @@ void Bot::handleAzsList(qint64 chatId) {
 
         QJsonObject jsonObj = jsonDoc.object();
 
-        // 🔹 Перевіряємо, чи є помилка у відповіді
         if (jsonObj.contains("error")) {
             QString errorMessage = jsonObj["error"].toString();
             qWarning() << "❌ Сервер повернув помилку:" << errorMessage;
@@ -456,9 +585,10 @@ void Bot::handleAzsList(qint64 chatId) {
             return;
         }
 
-        // ✅ Формуємо список АЗС у форматі "terminal_id - name"
+        // 🔹 Формуємо список повідомлень
+        QStringList parts;
         QString responseText = "⛽ <b>Список АЗС</b>\n";
-        int messageLimit = 3500;  // 🔹 Залишаємо запас до 4096 символів
+        int messageLimit = 3500;
         int currentLength = responseText.size();
 
         for (const QJsonValue &val : azsList) {
@@ -468,8 +598,8 @@ void Bot::handleAzsList(qint64 chatId) {
                                .arg(obj["name"].toString());
 
             if (currentLength + line.size() > messageLimit) {
-                sendMessage(chatId, responseText);  // 🔹 Надсилаємо частину списку
-                responseText = "⛽ <b>Список АЗС (продовження)</b>\n";  // 🔹 Починаємо нове повідомлення
+                parts.append(responseText);
+                responseText = "⛽ <b>Список АЗС (продовження)</b>\n";
                 currentLength = responseText.size();
             }
 
@@ -478,7 +608,16 @@ void Bot::handleAzsList(qint64 chatId) {
         }
 
         if (!responseText.isEmpty()) {
-            sendMessage(chatId, responseText);  // 🔹 Надсилаємо залишок списку
+            parts.append(responseText);
+        }
+
+        // 🔹 Надсилаємо всі частини з затримкою
+        int delay = 0;
+        for (const QString &part : parts) {
+            QTimer::singleShot(delay, this, [this, chatId, part]() {
+                sendMessage(chatId, part);
+            });
+            delay += 700;  // ⏱ 700 мс затримка між повідомленнями
         }
     });
 }
@@ -796,6 +935,7 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
         row1.append("⛽ ПРК");
 
         QJsonArray row2;
+        row2.append("📍 Показати на карті");  // ✅ Нова кнопка
         row2.append("🔙 Головне меню");
 
         keyboardArray.append(row1);
@@ -817,154 +957,6 @@ void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
 
 
 
-// void Bot::fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId) {
-//     QUrl url(QString("http://localhost:8181/terminal_info?client_id=%1&terminal_id=%2")
-//                  .arg(clientId).arg(terminalId));
-
-//     QNetworkRequest request(url);
-//     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-//     QNetworkReply *reply = networkManager->get(request);
-
-//     connect(reply, &QNetworkReply::finished, this, [this, reply, chatId, clientId, terminalId]() {
-//         if (reply->error() != QNetworkReply::NoError) {
-//             qWarning() << "❌ Помилка отримання даних про термінал:" << reply->errorString();
-//             sendMessage(chatId, "❌ Не вдалося отримати інформацію про термінал.");
-//             handleStartCommand(chatId);  // ⬅️ Повертаємо головне меню
-//             reply->deleteLater();
-//             return;
-//         }
-
-//         QByteArray responseData = reply->readAll();
-//         QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
-//         reply->deleteLater();
-
-//         if (!jsonDoc.isObject()) {
-//             qWarning() << "❌ Отримано некоректний JSON!";
-//             sendMessage(chatId, "❌ Сталася помилка при обробці відповіді сервера.");
-//             handleStartCommand(chatId);
-//             return;
-//         }
-
-//         QJsonObject jsonObj = jsonDoc.object();
-
-//         // 🔹 Перевіряємо, чи є помилка у відповіді
-//         if (jsonObj.contains("error")) {
-//             QString errorMessage = jsonObj["error"].toString();
-//             qWarning() << "❌ Сервер повернув помилку:" << errorMessage;
-//             sendMessage(chatId, "❌ " + errorMessage);
-//             handleStartCommand(chatId);
-//             return;
-//         }
-
-//         // ✅ Продовжуємо обробку
-//         QString clientName = jsonObj["client_name"].toString();
-//         QString adress = jsonObj["adress"].toString();
-//         QString phone = jsonObj["phone"].toString();
-//         QJsonArray dispensers = jsonObj["dispensers_info"].toArray();
-
-//         // 📌 Формуємо текстове повідомлення
-//         QString responseText;
-//         responseText += QString("🏪 <b>АЗС:</b> %1\n").arg(clientName);
-//         responseText += QString("⛽ <b>Термінал:</b> %1\n").arg(jsonObj["terminal_id"].toInt());
-//         responseText += QString("📍 <b>Адреса:</b> %1\n").arg(adress);
-//         responseText += QString("📞 <b>Телефон:</b> <code>%1</code>\n\n").arg(phone);
-
-
-
-        // // 🔹 Тепер виконуємо запит до `/pos_info`
-        // QUrl posUrl(QString("http://localhost:8181/pos_info?client_id=%1&terminal_id=%2")
-        //                 .arg(clientId).arg(terminalId));
-
-        // QNetworkRequest posRequest(posUrl);
-        // posRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-
-        // QNetworkReply *posReply = networkManager->get(posRequest);
-
-        // connect(posReply, &QNetworkReply::finished, this, [this, posReply, chatId, responseText, dispensers]() mutable {
-        //     if (posReply->error() == QNetworkReply::NoError) {
-        //         QByteArray posData = posReply->readAll();
-        //         QJsonDocument posJsonDoc = QJsonDocument::fromJson(posData);
-
-        //         if (posJsonDoc.isObject()) {
-        //             QJsonObject posJsonObj = posJsonDoc.object();
-        //             QJsonArray posInfoArray = posJsonObj["pos_info"].toArray();
-
-        //             // 🔹 Формуємо блок з інформацією про POS
-        //             if (!posInfoArray.isEmpty()) {
-        //                 responseText += "<b>Інформація про POS</b>\n";
-        //                 for (const QJsonValue &posVal : posInfoArray) {
-        //                     QJsonObject posObj = posVal.toObject();
-        //                     responseText += QString("💳 <b>Каса %1</b>\n").arg(posObj["pos_id"].toInt());
-
-        //                     // 🔹 Виводимо ЗН та ФН в одному рядку
-        //                     responseText += QString("   🔹 ЗН: %1  |  ФН: %2\n")
-        //                                         .arg(posObj["factorynumber"].toString())
-        //                                         .arg(posObj["regnumber"].toString());
-
-        //                     if (posObj.contains("pos_version") && !posObj["pos_version"].toString().isEmpty()) {
-        //                         responseText += QString("   🔹 Версія ПО: %1\n").arg(posObj["pos_version"].toString());
-        //                     }
-
-        //                     if (posObj.contains("db_version") && !posObj["db_version"].toString().isEmpty()) {
-        //                         responseText += QString("   🔹 Версія FB: %1\n").arg(posObj["db_version"].toString());
-        //                     }
-
-        //                     if (posObj.contains("posterm_version") && !posObj["posterm_version"].toString().isEmpty()) {
-        //                         responseText += QString("   🔹 Bank DLL ver: %1\n").arg(posObj["posterm_version"].toString());
-        //                     }
-
-        //                     responseText += "\n";
-        //                 }
-        //             }
-
-        //         }
-        //     } else {
-        //         qWarning() << "❌ Не вдалося отримати інформацію про POS:" << posReply->errorString();
-        //     }
-
-        //     posReply->deleteLater();
-
-//             // 🔹 Додаємо інформацію про ТРК
-//             responseText += "<b>Конфігурація ПРК</b>\n";
-
-//             for (const QJsonValue &dispenserVal : dispensers) {
-//                 QJsonObject dispenserObj = dispenserVal.toObject();
-//                 int dispenserId = dispenserObj["dispenser_id"].toInt();
-//                 QString protocol = dispenserObj["protocol"].toString();
-//                 int port = dispenserObj["port"].toInt();
-//                 int speed = dispenserObj["speed"].toInt();
-//                 int address = dispenserObj["address"].toInt();
-
-//                 responseText += QString("🔹 <b>ПРК %1:</b> %2, порт %3, швидкість %4, адреса %5\n")
-//                                     .arg(dispenserId).arg(protocol).arg(port).arg(speed).arg(address);
-
-//                 if (dispenserObj.contains("pumps_info")) {
-//                     QJsonArray pumps = dispenserObj["pumps_info"].toArray();
-//                     for (int i = 0; i < pumps.size(); ++i) {
-//                         QJsonObject pumpObj = pumps[i].toObject();
-//                         int pumpId = pumpObj["pump_id"].toInt();
-//                         int tankId = pumpObj["tank_id"].toInt();
-//                         QString fuel = pumpObj["fuel_shortname"].toString();
-
-//                         if (i == pumps.size() - 1) {
-//                             responseText += QString("  └ 🛠 Пістолет %1 (резервуар %2) – %3\n")
-//                                                 .arg(pumpId).arg(tankId).arg(fuel);
-//                         } else {
-//                             responseText += QString("  ├ 🛠 Пістолет %1 (резервуар %2) – %3\n")
-//                                                 .arg(pumpId).arg(tankId).arg(fuel);
-//                         }
-//                     }
-//                 }
-//             }
-
-//             qDebug() << "📩 Відправляється повідомлення:\n" << responseText;
-
-//             // 🔹 Відправляємо все одне повідомлення в Telegram
-//             sendMessage(chatId, responseText);
-//         });
-//     });
-// }
 
 
 
