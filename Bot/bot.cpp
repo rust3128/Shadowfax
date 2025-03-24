@@ -779,68 +779,141 @@ void Bot::handlePrkInfo(qint64 chatId) {
 
 
 
+// void Bot::handleRroInfo(qint64 chatId) {
+//     qDebug() << "✅ Виконано handleRroInfo() для чату" << chatId;
+
+//     QUrl posUrl(QString("http://localhost:8181/pos_info?client_id=%1&terminal_id=%2")
+//                     .arg(lastSelectedClientId).arg(lastSelectedTerminalId));  // ✅ Використовуємо збережений terminalId
+
+//     QNetworkRequest posRequest(posUrl);
+//     posRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+//     QNetworkReply *posReply = networkManager->get(posRequest);
+
+//     connect(posReply, &QNetworkReply::finished, this, [this, posReply, chatId]() mutable {
+//         if (posReply->error() == QNetworkReply::NoError) {
+//             QByteArray posData = posReply->readAll();
+//             QJsonDocument posJsonDoc = QJsonDocument::fromJson(posData);
+
+//             if (posJsonDoc.isObject()) {
+//                 QJsonObject posJsonObj = posJsonDoc.object();
+//                 QJsonArray posInfoArray = posJsonObj["pos_info"].toArray();
+
+//                 // 🔹 Формуємо блок з інформацією про POS
+//                 QString responseText;
+//                 if (!posInfoArray.isEmpty()) {
+//                     responseText += "<b>Інформація про POS</b>\n";
+//                     for (const QJsonValue &posVal : posInfoArray) {
+//                         QJsonObject posObj = posVal.toObject();
+//                         responseText += QString("💳 <b>Каса %1</b>\n").arg(posObj["pos_id"].toInt());
+
+//                         // 🔹 Виводимо ЗН та ФН в одному рядку
+//                         responseText += QString("   🔹 ЗН: %1  |  ФН: %2\n")
+//                                             .arg(posObj["factorynumber"].toString())
+//                                             .arg(posObj["regnumber"].toString());
+
+//                         if (posObj.contains("pos_version") && !posObj["pos_version"].toString().isEmpty()) {
+//                             responseText += QString("   🔹 Версія ПО: %1\n").arg(posObj["pos_version"].toString());
+//                         }
+
+//                         if (posObj.contains("db_version") && !posObj["db_version"].toString().isEmpty()) {
+//                             responseText += QString("   🔹 Версія FB: %1\n").arg(posObj["db_version"].toString());
+//                         }
+
+//                         if (posObj.contains("posterm_version") && !posObj["posterm_version"].toString().isEmpty()) {
+//                             responseText += QString("   🔹 Bank DLL ver: %1\n").arg(posObj["posterm_version"].toString());
+//                         }
+
+//                         responseText += "\n";
+//                     }
+//                 } else {
+//                     responseText = "ℹ️ Дані про POS відсутні.";
+//                 }
+
+//                 sendMessage(chatId, responseText);
+//             }
+//         } else {
+//             qWarning() << "❌ Не вдалося отримати інформацію про POS:" << posReply->errorString();
+//             sendMessage(chatId, "❌ Не вдалося отримати інформацію про POS.");
+//         }
+
+//         posReply->deleteLater();
+//     });
+// }
+
 void Bot::handleRroInfo(qint64 chatId) {
     qDebug() << "✅ Виконано handleRroInfo() для чату" << chatId;
 
-    QUrl posUrl(QString("http://localhost:8181/pos_info?client_id=%1&terminal_id=%2")
-                    .arg(lastSelectedClientId).arg(lastSelectedTerminalId));  // ✅ Використовуємо збережений terminalId
+    QUrl url(QString("http://localhost:8181/posdatas?client_id=%1&terminal_id=%2")
+                 .arg(lastSelectedClientId).arg(lastSelectedTerminalId));
 
-    QNetworkRequest posRequest(posUrl);
-    posRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
-    QNetworkReply *posReply = networkManager->get(posRequest);
+    QNetworkReply *reply = networkManager->get(request);
 
-    connect(posReply, &QNetworkReply::finished, this, [this, posReply, chatId]() mutable {
-        if (posReply->error() == QNetworkReply::NoError) {
-            QByteArray posData = posReply->readAll();
-            QJsonDocument posJsonDoc = QJsonDocument::fromJson(posData);
-
-            if (posJsonDoc.isObject()) {
-                QJsonObject posJsonObj = posJsonDoc.object();
-                QJsonArray posInfoArray = posJsonObj["pos_info"].toArray();
-
-                // 🔹 Формуємо блок з інформацією про POS
-                QString responseText;
-                if (!posInfoArray.isEmpty()) {
-                    responseText += "<b>Інформація про POS</b>\n";
-                    for (const QJsonValue &posVal : posInfoArray) {
-                        QJsonObject posObj = posVal.toObject();
-                        responseText += QString("💳 <b>Каса %1</b>\n").arg(posObj["pos_id"].toInt());
-
-                        // 🔹 Виводимо ЗН та ФН в одному рядку
-                        responseText += QString("   🔹 ЗН: %1  |  ФН: %2\n")
-                                            .arg(posObj["factorynumber"].toString())
-                                            .arg(posObj["regnumber"].toString());
-
-                        if (posObj.contains("pos_version") && !posObj["pos_version"].toString().isEmpty()) {
-                            responseText += QString("   🔹 Версія ПО: %1\n").arg(posObj["pos_version"].toString());
-                        }
-
-                        if (posObj.contains("db_version") && !posObj["db_version"].toString().isEmpty()) {
-                            responseText += QString("   🔹 Версія FB: %1\n").arg(posObj["db_version"].toString());
-                        }
-
-                        if (posObj.contains("posterm_version") && !posObj["posterm_version"].toString().isEmpty()) {
-                            responseText += QString("   🔹 Bank DLL ver: %1\n").arg(posObj["posterm_version"].toString());
-                        }
-
-                        responseText += "\n";
-                    }
-                } else {
-                    responseText = "ℹ️ Дані про POS відсутні.";
-                }
-
-                sendMessage(chatId, responseText);
-            }
-        } else {
-            qWarning() << "❌ Не вдалося отримати інформацію про POS:" << posReply->errorString();
-            sendMessage(chatId, "❌ Не вдалося отримати інформацію про POS.");
+    connect(reply, &QNetworkReply::finished, this, [this, reply, chatId]() {
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "❌ Помилка отримання даних про РРО:" << reply->errorString();
+            sendMessage(chatId, "❌ Не вдалося отримати інформацію про РРО.");
+            reply->deleteLater();
+            return;
         }
 
-        posReply->deleteLater();
+        QByteArray responseData = reply->readAll();
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(responseData);
+        reply->deleteLater();
+
+        if (!jsonDoc.isObject()) {
+            qWarning() << "❌ Отримано некоректний JSON!";
+            sendMessage(chatId, "❌ Сталася помилка при обробці відповіді сервера.");
+            return;
+        }
+
+        QJsonObject jsonObj = jsonDoc.object();
+
+        if (jsonObj.contains("error")) {
+            QString errorMessage = jsonObj["error"].toString();
+            qWarning() << "❌ Сервер повернув помилку:" << errorMessage;
+            sendMessage(chatId, "❌ " + errorMessage);
+            return;
+        }
+
+        QJsonArray posdatas = jsonObj["posdatas"].toArray();
+
+        if (posdatas.isEmpty()) {
+            sendMessage(chatId, "ℹ️ Немає інформації про каси для цього терміналу.");
+            return;
+        }
+
+        // ✅ Формуємо повідомлення
+        QString responseText = "<b>💳 Інформація про каси</b>\n\n";
+        for (const QJsonValue &val : posdatas) {
+            QJsonObject obj = val.toObject();
+            responseText += QString("🧾 Каса №%1\n").arg(obj["pos_id"].toInt());
+            responseText += QString("• Виробник: %1\n").arg(obj["manufacturer"].toString());
+            responseText += QString("• Модель: %1\n").arg(obj["model"].toString());
+            responseText += QString("• Версія ПО РРО: %1\n").arg(obj["posversion"].toString());
+            responseText += QString("• Версія ПО МУК: %1\n").arg(obj["mukversion"].toString());
+            responseText += QString("• ЗН: %1\n").arg(obj["factorynumber"].toString());
+            responseText += QString("• ФН: %1\n").arg(obj["regnumber"].toString());
+            QString rawDate = obj["datreg"].toString();
+            QString dateOnly;
+            if (!rawDate.isEmpty()) {
+                QDateTime dt = QDateTime::fromString(rawDate, Qt::ISODate);
+                if (dt.isValid()) {
+                    dateOnly = dt.date().toString("yyyy-MM-dd");
+                } else {
+                    dateOnly = rawDate; // fallback, якщо не розпізналось
+                }
+            }
+            responseText += QString("• Дата реєстрації: %1\n\n").arg(dateOnly);
+
+        }
+
+        sendMessage(chatId, responseText);
     });
 }
-
 
 
 
