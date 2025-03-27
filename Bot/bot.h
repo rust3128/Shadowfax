@@ -52,6 +52,8 @@ private:
     void fetchTerminalInfo(qint64 chatId, qint64 clientId, int terminalId); // * @brief Виконує запит у Palantír для отримання інформації про термінал
     void processTerminalInfo(qint64 chatId, const QByteArray &data);        //@brief Обробляє відповідь Palantír із інформацією про термінал
 
+    static void rotateOldLogs();  // Архівує старі .log у .7z
+
 private:
     QNetworkAccessManager *networkManager;
     QString botToken;

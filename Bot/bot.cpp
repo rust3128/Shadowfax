@@ -14,6 +14,7 @@
 #include <QRegularExpression>
 #include <QUrlQuery>
 #include <QThread>
+#include <QProcess>
 
 static QFile logFile;
 
@@ -22,6 +23,25 @@ Bot::Bot(QObject *parent) : QObject(parent) {
     lastUpdateId = 0;  // Ініціалізуємо update_id
     networkManager = new QNetworkAccessManager(this);
     loadBotToken();
+
+    // ⏰ Запускаємо ротацію логів щодня о 00:01
+    QTimer *logRotationTimer = new QTimer(this);
+    connect(logRotationTimer, &QTimer::timeout, this, []() {
+        Bot::rotateOldLogs();
+    });
+
+    int msecToNextRun = QTime::currentTime().msecsTo(QTime(0, 1, 0));
+    if (msecToNextRun < 0) {
+        msecToNextRun += 24 * 60 * 60 * 1000;  // якщо вже після 00:01 — плануємо на завтра
+    }
+
+    QTimer::singleShot(msecToNextRun, this, [this, logRotationTimer]() {
+        logRotationTimer->start(24 * 60 * 60 * 1000);  // запуск кожні 24 год
+        Bot::rotateOldLogs();  // перший виклик одразу
+        qDebug() << "🕐 Перша ротація логів відбулася одразу після опівночі.";
+    });
+
+
 }
 
 /**
@@ -33,8 +53,10 @@ void Bot::initLogging() {
     if (!logDir.exists()) {
         logDir.mkpath(".");
     }
+    rotateOldLogs();
+    QString currentDate = QDate::currentDate().toString("yyyy-MM-dd");
+    QString logFilePath = logDirPath + QString("/shadowfax_%1.log").arg(currentDate);
 
-    QString logFilePath = logDirPath + "/shadowfax.log";
     logFile.setFileName(logFilePath);
 
     if (!logFile.open(QIODevice::Append | QIODevice::Text)) {
@@ -57,6 +79,81 @@ void Bot::initLogging() {
     });
 
     qDebug() << "Logging initialized. Log file:" << logFilePath;
+}
+
+void Bot::rotateOldLogs() {
+    QString configPath = QCoreApplication::applicationDirPath() + "/config/config.ini";
+    QSettings settings(configPath, QSettings::IniFormat);
+    QString sevenZipPath = settings.value("Logging/seven_zip_path", "").toString();
+
+    if (sevenZipPath.isEmpty() || !QFile::exists(sevenZipPath)) {
+        qCritical() << "❌ 7z.exe not found! Set Logging/seven_zip_path in config.ini";
+        return;
+    }
+
+    QString logDirPath = QCoreApplication::applicationDirPath() + "/logs";
+    QDir logDir(logDirPath);
+
+    QDate today = QDate::currentDate();
+    QStringList logFiles = logDir.entryList(QStringList() << "shadowfax_*.log", QDir::Files);
+
+    for (const QString &fileName : logFiles) {
+        QString dateStr = fileName.mid(10, 10);  // shadowfax_YYYY-MM-DD.log
+        QDate fileDate = QDate::fromString(dateStr, "yyyy-MM-dd");
+
+        if (!fileDate.isValid() || fileDate >= today) {
+            continue;  // Пропускаємо сьогоднішній або неправильний файл
+        }
+
+        QString fullLogPath = logDir.absoluteFilePath(fileName);
+        QString baseName = fileName.section('.', 0, 0);  // shadowfax_YYYY-MM-DD
+        QString archivePath = logDir.absoluteFilePath(baseName + ".7z");
+
+        QStringList arguments;
+        arguments << "a" << "-t7z" << archivePath << fullLogPath;
+
+        qDebug() << "📦 Архівація:" << arguments.join(" ");
+
+        QProcess process;
+        process.setProgram(sevenZipPath);
+        process.setArguments(arguments);
+        process.setWorkingDirectory(logDirPath);
+        process.setProcessChannelMode(QProcess::MergedChannels);
+        process.start();
+
+        if (!process.waitForStarted()) {
+            qWarning() << "❌ Не вдалося запустити 7z:" << process.errorString();
+            continue;
+        }
+
+        process.waitForFinished();
+
+        if (QFile::exists(archivePath)) {
+            qDebug() << "✅ Архів створено:" << archivePath;
+            QFile::remove(fullLogPath);
+        } else {
+            qWarning() << "❌ Архів не створено для" << fullLogPath;
+        }
+    }
+
+    // 🔸 Очистка старих архівів
+    int retentionDays = settings.value("Logging/log_retention_days", 7).toInt();
+    QDate thresholdDate = today.addDays(-retentionDays);
+
+    QStringList archiveFiles = logDir.entryList(QStringList() << "shadowfax_*.7z", QDir::Files);
+    for (const QString &archiveName : archiveFiles) {
+        QString dateStr = archiveName.mid(10, 10);  // shadowfax_YYYY-MM-DD.7z
+        QDate fileDate = QDate::fromString(dateStr, "yyyy-MM-dd");
+
+        if (fileDate.isValid() && fileDate < thresholdDate) {
+            QString fullPath = logDir.absoluteFilePath(archiveName);
+            if (QFile::remove(fullPath)) {
+                qDebug() << "🗑 Видалено старий архів:" << fullPath;
+            } else {
+                qWarning() << "❌ Не вдалося видалити:" << fullPath;
+            }
+        }
+    }
 }
 
 
